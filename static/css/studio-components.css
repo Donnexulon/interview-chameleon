@@ -1,0 +1,95 @@
+.studio-kicker {
+    color: var(--terracotta-dark);
+    font-family: var(--studio-sans);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+.studio-rule-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.studio-rule-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+}
+
+.studio-icon-button {
+    display: inline-grid;
+    width: 2.2rem;
+    height: 2.2rem;
+    place-items: center;
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+    background: rgba(247, 241, 231, 0.52);
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.studio-icon-button:hover {
+    border-color: var(--terracotta);
+    background: var(--paper-highlight);
+    color: var(--terracotta-dark);
+}
+
+.studio-paper-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    min-height: 2.45rem;
+    padding: 0.55rem 1rem;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    background: var(--paper-sheet);
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.studio-paper-button:hover {
+    background: var(--paper-highlight);
+}
+
+.studio-paper-button.is-on {
+    border-color: var(--forest);
+    color: var(--forest);
+}
+
+.studio-danger-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2.45rem;
+    padding: 0.55rem 1rem;
+    border: 1px solid #cc563f;
+    border-radius: 2px;
+    background: transparent;
+    color: #f0d9ce;
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.studio-danger-button:hover {
+    background: var(--terracotta-dark);
+    color: #fff8ee;
+}
+
+.studio-danger-button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}

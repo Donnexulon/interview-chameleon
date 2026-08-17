@@ -1,4 +1,5 @@
 import os
+import mimetypes
 import requests
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -38,6 +39,10 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Interview Chameleon API", version="1.0.0", lifespan=lifespan)
+
+# Windows does not consistently register ES module files. Explicitly serving
+# .mjs as JavaScript keeps the locally bundled MediaPipe module importable.
+mimetypes.add_type("text/javascript", ".mjs", strict=True)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

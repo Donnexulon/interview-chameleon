@@ -1364,6 +1364,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 clearInterval(window.sessionInterval);
                 window.sessionInterval = null;
             }
+            if (state.currentAudio) {
+                state.currentAudio.pause();
+                state.currentAudio = null;
+            }
         }
         if (routes[route]) {
             mainContent.innerHTML = '';
@@ -1390,7 +1394,6 @@ document.addEventListener('DOMContentLoaded', () => {
         ];
         mainContent.innerHTML = `
             <style>
-                @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
                 /* -- RESET FOR HERO -- */
                 .hero-wrap{position:relative;min-height:100vh;background:var(--t-bg-solid);overflow:hidden;font-family:'Plus Jakarta Sans','Inter',sans-serif}
@@ -2446,6 +2449,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const modIcon = mod.icon;
         const mc = mod.color; // e.g. "168,85,247"
         const mh = mod.hex;   // e.g. "#a855f7"
+        const portraitSrc = state.interviewerPersona?.gender === 'male'
+            ? '/static/assets/interviewers/interviewer-male.png'
+            : '/static/assets/interviewers/interviewer-female.png';
 
         const sessionCSS = `
         <style>
@@ -2585,75 +2591,128 @@ document.addEventListener('DOMContentLoaded', () => {
         </style>`;
 
         mainContent.innerHTML = sessionCSS + `
-        <!-- Camera PIP -->
-        <div class="ss-pip hidden" id="camera-pip-container">
-            <video class="ss-pip-video" id="self-camera-preview" autoplay muted playsinline></video>
-            <div class="ss-pip-overlay">
-                <div style="display:flex;align-items:center;gap:5px">
-                    <div class="ss-pip-dot"></div>
-                    <span class="ss-pip-label">You</span>
-                </div>
-                <button class="ss-pip-cam-btn" id="camera-toggle-btn" aria-label="Toggle camera">${ti('camera')}</button>
+        <div class="studio-camera-pip hidden" id="camera-pip-container" aria-label="Your camera preview">
+            <video class="studio-camera-pip__video" id="self-camera-preview" autoplay muted playsinline></video>
+            <div class="studio-camera-pip__bar">
+                <span class="studio-camera-pip__label">Your camera</span>
+                <button class="studio-camera-pip__button" id="camera-toggle-btn" aria-label="Toggle camera">${ti('camera')}</button>
             </div>
-            <div class="ss-pip-off hidden" id="camera-off-overlay">
-                <span style="font-size:28px;opacity:.3">${ti('camera-off')}</span>
-                <span>Camera Off</span>
+            <div class="studio-camera-pip__off hidden" id="camera-off-overlay">
+                <span aria-hidden="true">${ti('camera-off')}</span>
+                <span>Camera off</span>
             </div>
         </div>
 
-        <div class="ss-wrap">
-            <!-- HEADER -->
-            <div class="ss-hdr">
-                <div class="ss-hdr-left">
-                    <button class="ss-back" onclick="window.nav('setup')" title="Back to setup" aria-label="Back to setup">${ti('arrow-left')}</button>
-                    <div class="ss-char-avatar" id="char-avatar">${charInitial}
-                        <div class="ss-speak-ring"></div>
+        <main class="studio-ui studio-session">
+            <header class="studio-session__header">
+                <div class="studio-session__brand">
+                    <button class="studio-icon-button" onclick="window.nav('setup')" title="Back to setup" aria-label="Back to setup">${ti('arrow-left')}</button>
+                    <div class="studio-session__brand-copy">
+                        <h1 class="studio-session__title">The Interview Room</h1>
+                        <span class="studio-session__divider" aria-hidden="true"></span>
+                        <span class="studio-session__module">${escapeHTML(modLabel)} · ${escapeHTML(state.targetRole || 'General Candidate')}</span>
                     </div>
-                    <div class="ss-hdr-info">
-                        <div class="ss-hdr-name">${charName} <span>- Interviewer</span></div>
-                        <div class="ss-hdr-role">${state.targetRole || 'Interview'} - ${charRole}</div>
+                </div>
+                <div class="studio-session__controls">
+                    <span class="studio-session__live">Live rehearsal</span>
+                    <span class="studio-session__divider" aria-hidden="true"></span>
+                    <button class="studio-paper-button is-on" id="voice-toggle">${ti('volume')} <span class="studio-control-copy">Voice on</span></button>
+                    <button class="studio-paper-button" id="mirror-toggle">${ti('eye-off')} <span class="studio-control-copy">Mirror off</span></button>
+                    <div class="studio-session__counter" id="q-counter">Q <span>0</span> / ?</div>
+                    <div class="studio-session__timer" id="session-timer">0:00</div>
+                    <span id="response-timer" hidden>0:00</span>
+                    <button class="studio-danger-button" id="end-session-btn">${ti('player-stop')} <span class="studio-control-copy">End session</span></button>
+                </div>
+            </header>
+
+            <div class="studio-session__body">
+                <section class="studio-stage" aria-label="Interviewer stage">
+                    <div class="studio-stage__portrait" id="char-avatar" data-state="idle">
+                        <img src="${portraitSrc}" alt="${escapeHTML(charName)}, your interviewer">
                     </div>
-                    <div class="ss-mod-pill">${ti(modIcon)} ${modLabel}</div>
-                </div>
-                <div class="ss-hdr-right">
-                    <button class="ss-ctrl amber on" id="voice-toggle">${ti('volume')} Voice On</button>
-                    <button class="ss-ctrl" id="mirror-toggle">${ti('eye')} Mirror</button>
-                    <div class="ss-q-counter" id="q-counter">Q <span>0</span> / ?</div>
-                    <div class="ss-timer-badge" id="session-timer">0:00</div>
-                    <div style="display:none"><span id="response-timer">0:00</span></div>
-                    <button class="ss-end" id="end-session-btn">${ti('player-stop')} End Session</button>
-                </div>
+                    <div class="studio-stage__corner-label">Private · Local AI</div>
+                    <div class="studio-stage__details">
+                        <h2 class="studio-stage__name">${escapeHTML(charName)}</h2>
+                        <p class="studio-stage__role">${escapeHTML(charRole)} interviewer · ${escapeHTML(state.targetRole || 'Interview rehearsal')}</p>
+                        <div class="studio-stage__status-row">
+                            <span class="studio-stage__state" id="interviewer-state-label">Ready</span>
+                            <div class="studio-stage__audio-actions" id="interviewer-audio-actions" aria-live="polite"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="studio-workspace" aria-label="Interview workspace">
+                    <div class="studio-question">
+                        <div class="studio-question__topline">
+                            <span class="studio-kicker" id="current-question-label">Current question</span>
+                            <span class="studio-question__timer">Answer window · <strong id="resp-timer-display">0:00</strong></span>
+                        </div>
+                        <div class="studio-question__text is-thinking" id="current-question" aria-live="polite">Preparing your first question…</div>
+                        <div class="studio-question__progress" aria-hidden="true">
+                            <div class="studio-question__progress-fill green" id="answer-timer-bar"></div>
+                        </div>
+                    </div>
+
+                    <div class="studio-response">
+                        <div class="studio-response__heading">
+                            <span class="studio-kicker">Your response</span>
+                            <span class="studio-response__timing" id="resp-hint">Average response · <span id="avg-resp-display">—</span></span>
+                        </div>
+                        <div class="studio-response__composer">
+                            <button class="studio-response__mic" id="mic-btn" title="Voice input" aria-label="Start voice input">${ti('microphone')}<span class="ss-mic-ping"></span></button>
+                            <textarea class="studio-response__textarea" id="chat-input" placeholder="Answer naturally. Your notes stay on this machine." rows="2"></textarea>
+                            <button class="studio-response__send" id="chat-send" title="Send response" aria-label="Send response">${ti('arrow-up')}</button>
+                        </div>
+                        <div class="studio-response__footer">
+                            <span>Enter to send · Shift + Enter for a new line</span>
+                            <span class="studio-response__wordcount" id="live-wc"></span>
+                        </div>
+                    </div>
+
+                    <div class="studio-transcript" id="chat-area">
+                        <div class="studio-transcript__header">
+                            <span class="studio-rule-label studio-kicker">Session record</span>
+                            <span class="studio-transcript__count" id="transcript-count">No exchanges yet</span>
+                        </div>
+                        <div id="chat-history">
+                            <div class="studio-transcript__empty">Your completed exchanges will be filed here as the rehearsal progresses.</div>
+                        </div>
+                    </div>
+                </section>
             </div>
 
-            <!-- TIMER BAR -->
-            <div class="ss-timer-bar">
-                <div class="ss-timer-bar-fill green" id="answer-timer-bar"></div>
-            </div>
-
-            <!-- CHAT AREA -->
-            <div class="ss-chat" id="chat-area">
-                <div class="ss-chat-inner" id="chat-history">
-                    <!-- Messages render here -->
+            <aside class="studio-coach" aria-label="Live coaching notes">
+                <div class="studio-coach__intro">
+                    <span class="studio-kicker">Live coach</span>
+                    <span class="studio-coach__note" id="coach-note">Settle in. Answer the question you were asked.</span>
                 </div>
-            </div>
-
-            <!-- INPUT AREA -->
-            <div class="ss-input">
-                <div class="ss-input-inner">
-                    <button class="ss-mic" id="mic-btn" title="Voice input" aria-label="Voice input">${ti('microphone')}
-                        <div class="ss-mic-ping"></div>
-                    </button>
-                    <textarea class="ss-textarea" id="chat-input" placeholder="Type your response..." rows="1"></textarea>
-                    <button class="ss-send" id="chat-send" title="Send" aria-label="Send response">${ti('send')}</button>
+                <div class="studio-coach__metric">
+                    <span class="studio-coach__metric-label">Response pace</span>
+                    <span class="studio-coach__metric-value" id="coach-pace">Waiting</span>
                 </div>
-                <div class="ss-resp-hint" id="resp-hint">Response timer: <strong id="resp-timer-display">0:00</strong> - Avg response: <span id="avg-resp-display">- sec</span></div>
-                <div class="ss-live-wc" id="live-wc"></div>
-            </div>
-        </div>`;
+                <div class="studio-coach__metric">
+                    <span class="studio-coach__metric-label">Specificity</span>
+                    <span class="studio-coach__metric-value" id="coach-specificity">Not enough text</span>
+                </div>
+                <div class="studio-coach__metric">
+                    <span class="studio-coach__metric-label">Structure</span>
+                    <span class="studio-coach__metric-value" id="coach-structure">Forming</span>
+                </div>
+                <div class="studio-coach__metric">
+                    <span class="studio-coach__metric-label">Presence</span>
+                    <span class="studio-coach__metric-value" id="coach-presence">Camera optional</span>
+                </div>
+            </aside>
+        </main>`;
 
         const chatInput = document.getElementById('chat-input');
         const sendBtn = document.getElementById('chat-send');
         const chatHistoryBlock = document.getElementById('chat-history');
+        const interviewerVisual = window.InterviewerVisual?.create({
+            rootId: 'char-avatar',
+            labelId: 'interviewer-state-label',
+            initialState: 'idle',
+        });
 
         // Auto-start camera
         if (state.cameraEnabled) {
@@ -2685,17 +2744,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.blindMirror = !state.blindMirror;
                 if (state.blindMirror) {
                     cameraPip.classList.add('hidden');
-                    mirrorToggle.innerHTML = `${ti('eye-off')} Mirror Off`;
+                    mirrorToggle.innerHTML = `${ti('eye-off')} <span class="studio-control-copy">Mirror off</span>`;
+                    mirrorToggle.classList.remove('is-on');
                 } else {
                     cameraPip.classList.remove('hidden');
-                    mirrorToggle.innerHTML = `${ti('eye')} Mirror On`;
+                    mirrorToggle.innerHTML = `${ti('eye')} <span class="studio-control-copy">Mirror on</span>`;
+                    mirrorToggle.classList.add('is-on');
                     if (!state.cameraStream && state.cameraEnabled) startCamera();
                 }
             };
             // Set initial state
             if (!state.blindMirror) {
                 cameraPip.classList.remove('hidden');
-                mirrorToggle.innerHTML = `${ti('eye')} Mirror On`;
+                mirrorToggle.innerHTML = `${ti('eye')} <span class="studio-control-copy">Mirror on</span>`;
+                mirrorToggle.classList.add('is-on');
             }
         }
 
@@ -2753,6 +2815,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let lastActivityTime = Date.now();
         let nudgeSent = false;
         let isAITalking = false;
+        let sessionBlocked = false;
         let aiTurnCount = 0;
         let curveballFired = false;
         let nextInterruptAt = null;
@@ -2780,7 +2843,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Q counter helpers ---
         const totalQs = { quick: 5, standard: 10, extended: 20 }[state.duration] || 10;
         function updateQCounter() {
-            const aiMsgs = state.chatHistory.filter(m => m.role === 'assistant' && !m.isNudge && !m.isTyping && !m.isInterruption).length;
+            const aiMsgs = state.chatHistory.filter(m => m.role === 'assistant' && !m.isNudge && !m.isTyping && !m.isInterruption && !m.isSystemError).length;
             const el = document.getElementById('q-counter');
             if (el) el.innerHTML = `Q <span>${aiMsgs}</span> / ${totalQs}`;
         }
@@ -2790,6 +2853,87 @@ document.addEventListener('DOMContentLoaded', () => {
         const responseTimerEl = document.getElementById('response-timer');
         const respTimerDisplay = document.getElementById('resp-timer-display');
         const avgRespDisplay = document.getElementById('avg-resp-display');
+        const coachPace = document.getElementById('coach-pace');
+        const coachSpecificity = document.getElementById('coach-specificity');
+        const coachStructure = document.getElementById('coach-structure');
+        const coachPresence = document.getElementById('coach-presence');
+        const coachNote = document.getElementById('coach-note');
+        let lastCoachUpdate = 0;
+
+        function setCoachMetric(element, text, tone = '') {
+            if (!element) return;
+            element.textContent = text;
+            element.classList.remove('is-good', 'is-caution', 'is-alert');
+            if (tone) element.classList.add(tone);
+        }
+
+        function updateLiveCoaching(responseSeconds = 0) {
+            if (sessionBlocked) {
+                setCoachMetric(coachPace, 'Session paused', 'is-alert');
+                setCoachMetric(coachSpecificity, 'Waiting for AI');
+                setCoachMetric(coachStructure, 'Waiting for AI');
+                setCoachMetric(coachPresence, window.BodyLanguageAnalyzer?.isActive() ? 'Local camera active' : 'Camera optional', window.BodyLanguageAnalyzer?.isActive() ? 'is-good' : '');
+                if (coachNote) coachNote.textContent = 'Ollama is open, but the selected model is not accepting chat. Return to setup after fixing the model.';
+                return;
+            }
+            const draft = chatInput.value.trim();
+            const signals = scoreTextSignals(draft);
+            const words = signals.word_count;
+
+            if (!words) {
+                setCoachMetric(coachPace, isAITalking ? 'Interviewer speaking' : 'Waiting');
+                setCoachMetric(coachSpecificity, 'Not enough text');
+                setCoachMetric(coachStructure, 'Forming');
+                if (coachNote) coachNote.textContent = isAITalking
+                    ? 'Listen for the exact question before you shape the answer.'
+                    : 'Settle in. Answer the question you were asked.';
+            } else {
+                const wpm = responseSeconds > 3 ? Math.round(words / responseSeconds * 60) : 0;
+                if (!wpm) setCoachMetric(coachPace, `${words} words drafted`);
+                else if (wpm < 85) setCoachMetric(coachPace, `${wpm} wpm · deliberate`, 'is-caution');
+                else if (wpm <= 175) setCoachMetric(coachPace, `${wpm} wpm · measured`, 'is-good');
+                else setCoachMetric(coachPace, `${wpm} wpm · quick`, 'is-alert');
+
+                const specificityPoints =
+                    Math.min(signals.metric_count, 2) * 2 +
+                    Math.min(signals.action_verb_count, 2) +
+                    (signals.has_outcome ? 2 : 0) +
+                    (signals.has_first_person ? 1 : 0);
+                if (specificityPoints >= 5) setCoachMetric(coachSpecificity, 'Concrete evidence', 'is-good');
+                else if (specificityPoints >= 2) setCoachMetric(coachSpecificity, 'Some detail', 'is-caution');
+                else setCoachMetric(coachSpecificity, 'Add an example', 'is-alert');
+
+                const structurePoints = [
+                    signals.has_constraint,
+                    signals.has_action_verb,
+                    signals.has_outcome,
+                    signals.has_first_person,
+                ].filter(Boolean).length;
+                if (structurePoints >= 3) setCoachMetric(coachStructure, 'Clear answer arc', 'is-good');
+                else if (structurePoints >= 2) setCoachMetric(coachStructure, 'Partial answer arc', 'is-caution');
+                else setCoachMetric(coachStructure, 'Forming', 'is-alert');
+
+                if (coachNote) {
+                    if (signals.filler_count > 1) coachNote.textContent = 'Pause once. Remove the filler and lead with your point.';
+                    else if (!signals.has_outcome && words > 35) coachNote.textContent = 'You have the setup. Land the result or impact.';
+                    else if (!signals.has_first_person && words > 25) coachNote.textContent = 'Make your own contribution explicit: what did you do?';
+                    else coachNote.textContent = 'Good. Keep the evidence tied to the question.';
+                }
+            }
+
+            if (window.BodyLanguageAnalyzer?.isActive()) {
+                const presence = window.BodyLanguageAnalyzer.getRealtimeMetrics();
+                if (presence) {
+                    const values = [presence.eye_contact, presence.posture].filter(Number.isFinite);
+                    const average = values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+                    if (average >= 70) setCoachMetric(coachPresence, `${average} · steady`, 'is-good');
+                    else if (average >= 45) setCoachMetric(coachPresence, `${average} · settling`, 'is-caution');
+                    else setCoachMetric(coachPresence, `${average} · reset posture`, 'is-alert');
+                }
+            } else {
+                setCoachMetric(coachPresence, state.cameraEnabled ? 'Starting locally' : 'Camera optional');
+            }
+        }
 
         function formatTime(seconds) {
             const m = Math.floor(seconds / 60);
@@ -2805,23 +2949,28 @@ document.addEventListener('DOMContentLoaded', () => {
             const responseSeconds = (now - lastResponseTime) / 1000;
             const inactivitySeconds = (now - lastActivityTime) / 1000;
 
+            if (now - lastCoachUpdate >= 500) {
+                lastCoachUpdate = now;
+                updateLiveCoaching(responseSeconds);
+            }
+
             sessionTimerEl.textContent = formatTime(sessionSeconds);
             if (responseTimerEl) responseTimerEl.textContent = formatTime(responseSeconds);
             if (respTimerDisplay) respTimerDisplay.textContent = formatTime(responseSeconds);
 
             // Update timer bar
             const timerBar = document.getElementById('answer-timer-bar');
-            if (timerBar && !isAITalking) {
+            if (timerBar && !isAITalking && !sessionBlocked) {
                 const remainingSeconds = Math.max(turnLimit - responseSeconds, 0);
                 const percentage = (remainingSeconds / turnLimit) * 100;
                 timerBar.style.width = `${percentage}%`;
 
                 if (remainingSeconds > turnLimit * 0.5) {
-                    timerBar.className = 'ss-timer-bar-fill green';
+                    timerBar.className = 'studio-question__progress-fill green';
                 } else if (remainingSeconds > 15) {
-                    timerBar.className = 'ss-timer-bar-fill yellow';
+                    timerBar.className = 'studio-question__progress-fill yellow';
                 } else {
-                    timerBar.className = 'ss-timer-bar-fill red';
+                    timerBar.className = 'studio-question__progress-fill red';
                 }
 
                 // Silence Detection (60s)
@@ -2854,9 +3003,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     triggerAIResponse(false);
                 }
-            } else if (timerBar && isAITalking) {
+            } else if (timerBar && (isAITalking || sessionBlocked)) {
                 timerBar.style.width = '100%';
-                timerBar.className = 'ss-timer-bar-fill green';
+                timerBar.className = 'studio-question__progress-fill green';
             }
         }, 100);
 
@@ -2865,12 +3014,15 @@ document.addEventListener('DOMContentLoaded', () => {
         voiceToggleBtn.addEventListener('click', () => {
             state.voiceMode = !state.voiceMode;
             if (state.voiceMode) {
-                voiceToggleBtn.innerHTML = `${ti('volume')} Voice On`;
-                voiceToggleBtn.classList.add('amber', 'on');
+                voiceToggleBtn.innerHTML = `${ti('volume')} <span class="studio-control-copy">Voice on</span>`;
+                voiceToggleBtn.classList.add('is-on');
             } else {
-                voiceToggleBtn.innerHTML = `${ti('volume-off')} Voice Off`;
-                voiceToggleBtn.classList.remove('amber', 'on');
+                voiceToggleBtn.innerHTML = `${ti('volume-off')} <span class="studio-control-copy">Voice off</span>`;
+                voiceToggleBtn.classList.remove('is-on');
                 if (state.currentAudio) state.currentAudio.pause();
+                interviewerVisual?.setState('idle');
+                const audioActions = document.getElementById('interviewer-audio-actions');
+                if (audioActions) audioActions.innerHTML = '';
             }
         });
 
@@ -2889,6 +3041,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mediaRecorder.onstart = () => {
                     state.isRecording = true;
                     micBtn.classList.add('active');
+                    interviewerVisual?.setState('listening');
                     chatInput.placeholder = 'Listening... click mic to stop';
                 };
                 mediaRecorder.onstop = async () => {
@@ -2908,7 +3061,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Trigger live wc update
                         chatInput.dispatchEvent(new Event('input'));
                     } catch (e) { console.error('STT error', e); }
-                    finally { chatInput.placeholder = 'Type your response...'; stream.getTracks().forEach(t => t.stop()); }
+                    finally {
+                        chatInput.placeholder = 'Answer naturally. Your notes stay on this machine.';
+                        interviewerVisual?.setState(chatInput.value.trim() ? 'listening' : 'idle');
+                        stream.getTracks().forEach(t => t.stop());
+                    }
                 };
                 mediaRecorder.start();
             } catch (err) { alert('Microphone access denied or not available.'); }
@@ -2919,13 +3076,15 @@ document.addEventListener('DOMContentLoaded', () => {
         chatInput.addEventListener('input', () => {
             lastActivityTime = Date.now();
             const words = chatInput.value.trim().split(/\s+/).filter(Boolean).length;
+            if (!isAITalking && !state.currentAudio) interviewerVisual?.setState(words ? 'listening' : 'idle');
+            updateLiveCoaching((Date.now() - lastResponseTime) / 1000);
             if (words === 0) { liveWcEl.textContent = ''; return; }
             const [okThresh, strongThresh] = WC_THRESHOLDS[state.selectedModule] || [30, 60];
             let label, color;
-            if (words >= strongThresh) { label = `${ti('circle-check')} Strong`; color = '#4ade80'; }
-            else if (words >= okThresh) { label = `${ti('thumb-up')} Good`; color = '#facc15'; }
-            else { label = `${ti('text-caption')} Brief`; color = 'var(--t-muted)'; }
-            liveWcEl.innerHTML = `${words} words - <span style="color:${color};font-weight:600">${label}</span>`;
+            if (words >= strongThresh) { label = 'developed'; color = 'var(--forest)'; }
+            else if (words >= okThresh) { label = 'taking shape'; color = 'var(--ochre)'; }
+            else { label = 'brief'; color = 'var(--ink-faint)'; }
+            liveWcEl.innerHTML = `${words} words · <strong style="color:${color}">${label}</strong>`;
         });
 
         // --- Chat Rendering ---
@@ -2947,71 +3106,56 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function updateChatView() {
             if (state.chatHistory.length === 0) return;
-            const avatar = document.getElementById('char-avatar');
-
-            // Check if AI is currently typing (thinking)
+            const currentQuestionEl = document.getElementById('current-question');
+            const currentQuestionLabel = document.getElementById('current-question-label');
+            const transcriptCount = document.getElementById('transcript-count');
+            const visibleMessages = state.chatHistory.filter(msg => !msg.isHidden && !msg.isNudge);
+            const latestAI = [...visibleMessages].reverse().find(msg => msg.role === 'assistant');
             const isThinking = state.chatHistory.some(m => m.isTyping);
-            if (avatar) {
-                avatar.classList.toggle('thinking', isThinking && !state.currentAudio);
+            if (isThinking && !state.currentAudio) interviewerVisual?.setState('thinking');
+
+            if (currentQuestionEl && latestAI) {
+                const waitingForCopy = latestAI.isTyping && (!latestAI.content || latestAI.content === '...');
+                currentQuestionEl.textContent = waitingForCopy ? 'Preparing the next question…' : latestAI.content;
+                currentQuestionEl.classList.toggle('is-thinking', waitingForCopy);
+                currentQuestionEl.classList.toggle('is-error', !!latestAI.isSystemError);
+                if (currentQuestionLabel) {
+                    currentQuestionLabel.textContent = latestAI.isSystemError
+                        ? 'Local AI needs attention'
+                        : latestAI.isCurveball
+                        ? 'Curveball question'
+                        : latestAI.isInterruption
+                            ? 'Interviewer interruption'
+                            : 'Current question';
+                }
             }
 
-            chatHistoryBlock.innerHTML = state.chatHistory.filter(msg => {
-                if (msg.isHidden || msg.isNudge) return false;
-                return true;
-            }).map(msg => {
+            const filedMessages = visibleMessages.filter(msg => msg !== latestAI && !msg.isTyping);
+            const completedResponses = filedMessages.filter(msg => msg.role === 'user').length;
+            if (transcriptCount) {
+                transcriptCount.textContent = completedResponses
+                    ? `${completedResponses} response${completedResponses === 1 ? '' : 's'} filed`
+                    : 'No exchanges yet';
+            }
+
+            chatHistoryBlock.innerHTML = filedMessages.length ? filedMessages.map(msg => {
                 const isAI = msg.role === 'assistant';
                 const isInterrupt = !!msg.isInterruption;
                 const isCurveball = !!msg.isCurveball;
                 const contentHTML = escapeHTML(msg.content || '');
+                const words = isAI ? 0 : (msg.content || '').split(/\s+/).filter(Boolean).length;
+                const note = isAI
+                    ? [isCurveball ? 'Curveball' : '', isInterrupt ? 'Interruption' : ''].filter(Boolean).join(' · ')
+                    : `${words} words`;
 
-                // --- Typing indicator ---
-                if (msg.isTyping) {
-                    return `<div class="ss-msg-typing">
-                        <div class="ss-ai-av">${charInitial}</div>
-                        <div>
-                            <div class="ss-ai-sender">${charName} <span class="ss-interrupt-tag" style="font-size:9px;color:var(--t-muted);border:none;padding:0;background:none">is thinking...</span></div>
-                            <div class="ss-typing-bubble">
-                                <div class="ss-typing-dot"></div><div class="ss-typing-dot"></div><div class="ss-typing-dot"></div>
-                            </div>
-                        </div>
-                    </div>`;
-                }
-
-                if (isAI) {
-                    return `<div class="ss-msg-ai">
-                        <div class="ss-ai-av">${charInitial}</div>
-                        <div class="ss-ai-wrap">
-                            <div class="ss-ai-sender">${charName}
-                                ${isCurveball ? `<span class="ss-curveball-tag">${ti('bolt')} Curveball</span>` : ''}
-                                ${isInterrupt ? `<span class="ss-interrupt-tag">${ti('bolt')} Interruption</span>` : ''}
-                            </div>
-                            <div class="ss-ai-bubble${isInterrupt ? ' interrupt' : ''}">${contentHTML}</div>
-                            <div class="ss-ai-actions" id="ai-actions-${state.chatHistory.indexOf(msg)}"></div>
-                        </div>
-                    </div>`;
-                } else {
-                    // User message with word count bar
-                    const words = (msg.content || '').split(/\s+/).filter(Boolean).length;
-                    const [okThresh, strongThresh] = WC_THRESHOLDS[state.selectedModule] || [30, 60];
-                    let wcLabel, wcColor;
-                    if (words >= strongThresh) { wcLabel = 'Strong'; wcColor = '#4ade80'; }
-                    else if (words >= okThresh) { wcLabel = 'Ok'; wcColor = '#facc15'; }
-                    else { wcLabel = 'Brief'; wcColor = '#f87171'; }
-                    const wcPct = Math.min(words / (strongThresh * 1.5) * 100, 100);
-
-                    return `<div class="ss-msg-user">
-                        <div class="ss-user-av">You</div>
-                        <div class="ss-user-wrap">
-                            <div class="ss-user-sender">You</div>
-                            <div class="ss-user-bubble">${contentHTML}</div>
-                            <div class="ss-wc">
-                                <div class="ss-wc-bar"><div class="ss-wc-fill" style="width:${wcPct}%;background:${wcColor}"></div></div>
-                                <span style="color:${wcColor}">${words} words - ${wcLabel}</span>
-                            </div>
-                        </div>
-                    </div>`;
-                }
-            }).join('');
+                return `<article class="studio-transcript-entry ${isAI ? 'studio-transcript-entry--question' : 'studio-transcript-entry--response'}">
+                    <div class="studio-transcript-entry__label">${isAI ? escapeHTML(charName) : 'Your response'}</div>
+                    <div>
+                        <div class="studio-transcript-entry__copy">${contentHTML}</div>
+                        ${note ? `<div class="studio-transcript-entry__meta">${escapeHTML(note)}</div>` : ''}
+                    </div>
+                </article>`;
+            }).join('') : '<div class="studio-transcript__empty">Your completed exchanges will be filed here as the rehearsal progresses.</div>';
 
             // Scroll to bottom
             const chatArea = document.getElementById('chat-area');
@@ -3045,19 +3189,36 @@ document.addEventListener('DOMContentLoaded', () => {
             await streamChat(state.selectedModel, messagesToSend, sysPrompt,
                 (chunk) => { state.chatHistory[typingIndex].content = chunk; updateChatView(); },
                 async (finalText) => {
+                    const aiFailed = /^Error connecting to Ollama:/i.test(finalText) || /^Error:\s/i.test(finalText);
+                    const displayText = aiFailed
+                        ? 'Ollama is open, but qwen2.5:7b is not accepting chat requests. Return to Setup after reloading or reinstalling the model.'
+                        : finalText;
                     state.chatHistory[typingIndex].isTyping = false;
-                    state.chatHistory[typingIndex].content = finalText;
+                    state.chatHistory[typingIndex].content = displayText;
+                    state.chatHistory[typingIndex].isSystemError = aiFailed;
                     state.chatHistory[typingIndex].timestamp = Date.now();
                     updateChatView();
+                    if (aiFailed) {
+                        sessionBlocked = true;
+                        isAITalking = false;
+                        interviewerVisual?.setState('idle');
+                        const stateLabel = document.getElementById('interviewer-state-label');
+                        if (stateLabel) stateLabel.textContent = 'Local AI unavailable';
+                        chatInput.disabled = true;
+                        chatInput.placeholder = 'Return to Setup and refresh the local model.';
+                        sendBtn.disabled = true;
+                        document.getElementById('mic-btn').disabled = true;
+                        updateLiveCoaching(0);
+                        return;
+                    }
                     scheduleNextInterruption();
-                    await handleTTS(finalText, false);
+                    await handleTTS(displayText, false);
                 }
             );
         }
 
         // --- TTS with Speaking Visualizer ---
         async function handleTTS(text, isNudge) {
-            const avatar = document.getElementById('char-avatar');
             if (state.voiceMode) {
                 try {
                     const res = await fetch('/api/tts', {
@@ -3072,12 +3233,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // Add speaking ring + visualizer when audio starts
                     const onSpeakStart = () => {
-                        if (avatar) { avatar.classList.remove('thinking'); avatar.classList.add('speaking'); }
-                        // Insert visualizer bars in last AI message
-                        const lastAiMsg = chatHistoryBlock.querySelector('.ss-msg-ai:last-child .ss-ai-actions');
-                        if (lastAiMsg) {
-                            lastAiMsg.innerHTML = `<div class="ss-visualizer">${Array(7).fill('<div class="ss-viz-bar"></div>').join('')}</div>
-                            <button class="ss-skip-btn" id="skip-tts-btn">⏩ Skip speech</button>`;
+                        interviewerVisual?.setState('speaking');
+                        const audioActions = document.getElementById('interviewer-audio-actions');
+                        if (audioActions) {
+                            audioActions.innerHTML = `<div class="ss-visualizer" aria-hidden="true">${Array(7).fill('<div class="ss-viz-bar"></div>').join('')}</div>
+                            <button class="ss-skip-btn" id="skip-tts-btn">Skip speech</button>`;
                             document.getElementById('skip-tts-btn')?.addEventListener('click', () => {
                                 if (state.currentAudio) state.currentAudio.pause();
                                 onSpeakEnd();
@@ -3086,7 +3246,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
 
                     const onSpeakEnd = () => {
-                        if (avatar) { avatar.classList.remove('speaking'); avatar.classList.remove('thinking'); }
+                        interviewerVisual?.setState('idle');
                         // Remove visualizer
                         document.querySelectorAll('.ss-visualizer').forEach(v => v.remove());
                         document.querySelectorAll('.ss-skip-btn').forEach(b => b.remove());
@@ -3105,7 +3265,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 } catch (e) {
                     console.error('TTS error', e);
-                    if (avatar) { avatar.classList.remove('speaking'); avatar.classList.remove('thinking'); }
+                    interviewerVisual?.setState('idle');
                     if (!isNudge) {
                         isAITalking = false;
                         lastResponseTime = Date.now();
@@ -3113,7 +3273,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else {
-                if (avatar) avatar.classList.remove('thinking');
+                interviewerVisual?.setState('idle');
                 if (!isNudge) {
                     isAITalking = false;
                     lastResponseTime = Date.now();
@@ -3156,6 +3316,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- Handle Send ---
         const handleSend = () => {
+            if (sessionBlocked) return;
             const text = chatInput.value.trim();
             if (!text) return;
 
@@ -3221,6 +3382,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const engagementData = buildEngagementMetrics();
 
         stopCamera();
+        document.getElementById('char-avatar')?.setAttribute('data-state', 'thinking');
+        const interviewerStateLabel = document.getElementById('interviewer-state-label');
+        if (interviewerStateLabel) interviewerStateLabel.textContent = 'Reviewing the rehearsal';
         const btn = document.getElementById('end-session-btn');
         if (btn) { btn.disabled = true; btn.innerHTML = `${ti('loader-2')} Evaluating...`; }
 
@@ -4259,7 +4423,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         mainContent.innerHTML = `
             <style>
-                @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
                 .sr-wrap{position:relative;min-height:100vh;background:var(--t-bg-solid);font-family:'Plus Jakarta Sans','Inter',sans-serif;color:var(--t-fg)}
                 .sr-wrap::-webkit-scrollbar{width:5px}.sr-wrap::-webkit-scrollbar-track{background:transparent}.sr-wrap::-webkit-scrollbar-thumb{background:var(--t-border);border-radius:99px}
@@ -4850,7 +5013,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!document.getElementById('qb-styles')) {
             const s = document.createElement('style'); s.id = 'qb-styles';
             s.textContent = `
-              @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
               /* ORBS */
               .qb-orbs{pointer-events:none;position:fixed;inset:0;z-index:0;overflow:hidden}
               .qb-orb{position:absolute;border-radius:50%;filter:blur(90px)}

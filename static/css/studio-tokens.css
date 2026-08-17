@@ -1,0 +1,61 @@
+:root {
+    --paper-canvas: #eee6d8;
+    --paper-sheet: #f3ebdd;
+    --paper-note: #e5d7be;
+    --paper-edge: #cbb99a;
+    --paper-highlight: #f7f1e7;
+    --charcoal: #10110f;
+    --charcoal-soft: #1b1b18;
+    --ink: #181713;
+    --ink-soft: #544a3a;
+    --ink-faint: #776b58;
+    --terracotta: #b4432b;
+    --terracotta-dark: #8e2f20;
+    --forest: #174e3e;
+    --ochre: #b17a25;
+    --rule: rgba(62, 47, 27, 0.28);
+    --rule-strong: rgba(62, 47, 27, 0.46);
+    --paper-shadow: rgba(45, 31, 16, 0.24);
+    --studio-serif: Georgia, "Times New Roman", serif;
+    --studio-sans: Arial, Helvetica, sans-serif;
+    --studio-hand: "Segoe Print", "Bradley Hand", cursive;
+}
+
+.studio-ui {
+    color: var(--ink);
+    font-family: var(--studio-sans);
+    background-color: var(--paper-canvas);
+    background-image:
+        radial-gradient(circle at 16% 8%, rgba(255, 255, 255, 0.38), transparent 34%),
+        repeating-linear-gradient(0deg, rgba(73, 52, 25, 0.018) 0, rgba(73, 52, 25, 0.018) 1px, transparent 1px, transparent 4px);
+}
+
+.studio-ui *,
+.studio-ui *::before,
+.studio-ui *::after {
+    box-sizing: border-box;
+}
+
+.studio-ui button,
+.studio-ui input,
+.studio-ui textarea {
+    font: inherit;
+}
+
+.studio-ui button:focus-visible,
+.studio-ui input:focus-visible,
+.studio-ui textarea:focus-visible {
+    outline: 2px solid var(--terracotta);
+    outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .studio-ui *,
+    .studio-ui *::before,
+    .studio-ui *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}

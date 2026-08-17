@@ -38,16 +38,16 @@ const BodyLanguageAnalyzer = (() => {
         if (initialized) return true;
         try {
             const { FilesetResolver, FaceLandmarker, PoseLandmarker } = await import(
-                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs'
+                '/static/vendor/mediapipe/vision_bundle.mjs?v=1.0.1'
             );
 
             const vision = await FilesetResolver.forVisionTasks(
-                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+                '/static/vendor/mediapipe/wasm'
             );
 
             faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
                 baseOptions: {
-                    modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                    modelAssetPath: '/static/vendor/mediapipe/models/face_landmarker.task',
                     delegate: 'GPU'
                 },
                 runningMode: 'VIDEO',
@@ -58,7 +58,7 @@ const BodyLanguageAnalyzer = (() => {
 
             poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
                 baseOptions: {
-                    modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+                    modelAssetPath: '/static/vendor/mediapipe/models/pose_landmarker_lite.task',
                     delegate: 'GPU'
                 },
                 runningMode: 'VIDEO',
