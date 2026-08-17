@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+venv/
+.venv/
+
+# Local app data
+*.db
+*.sqlite
+*.sqlite3
+interview.db
+history.db
+static/audio/
+uploads/
+tmp/
+
+# Local documents and exports
+*.docx
+*.pdf
+*.xlsx
+*.pptx
+*.csv
+
+# Generated media and logs
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.ogg
+*.log
+.cache/
+
+# Environment and OS noise
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

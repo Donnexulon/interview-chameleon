@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interview Chameleon</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css?v=3">
+    <link rel="stylesheet" href="/static/css/tailwind-compat.css?v=1">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.44.0/dist/tabler-icons.min.css">
+    <style>
+      :root {
+        --background: 220 20% 97%;
+        --foreground: 222 47% 11%;
+        --card: 0 0% 100%;
+        --card-foreground: 222 47% 11%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222 47% 11%;
+        --primary: 38 92% 50%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 220 14% 90%;
+        --secondary-foreground: 222 30% 25%;
+        --muted: 220 14% 92%;
+        --muted-foreground: 215 16% 47%;
+        --accent: 220 14% 88%;
+        --accent-foreground: 222 47% 11%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 220 13% 85%;
+        --input: 220 13% 85%;
+        --ring: 38 92% 50%;
+        --radius: 0.75rem;
+
+        --module-roleplay: 262 83% 58%;
+        --module-visual: 168 75% 42%;
+        --module-technical: 210 100% 56%;
+        --module-general: 250 60% 55%;
+
+        --shadow-glow: 0 0 40px -10px hsl(38 92% 50% / 0.2);
+        --shadow-card: 0 8px 32px -8px hsl(222 47% 4% / 0.08);
+
+        --font-display: 'Space Grotesk', sans-serif;
+        --font-body: 'Inter', sans-serif;
+
+        /* -- Concept Design Variables (light mode) -- */
+        --c-bg: #f8f9fc;
+        --c-card: rgba(0,0,0,.03);
+        --c-bord: rgba(0,0,0,.08);
+        --c-bord2: rgba(0,0,0,.14);
+        --c-fg: #1a1a2e;
+        --c-muted: #6b7280;
+        --c-amber: hsl(38 92% 42%);
+        /* Tier colors */
+        --c-bronze-c:#c47a3a; --c-bronze-bg:rgba(196,122,58,.08); --c-bronze-bord:rgba(196,122,58,.25);
+        --c-silver-c:#7b8a93; --c-silver-bg:rgba(123,138,147,.07); --c-silver-bord:rgba(123,138,147,.22);
+        --c-gold-c:#d4a017;   --c-gold-bg:rgba(212,160,23,.08);   --c-gold-bord:rgba(212,160,23,.28);
+        --c-plat-c:#5ba8b5;   --c-plat-bg:rgba(91,168,181,.07);   --c-plat-bord:rgba(91,168,181,.25);
+
+        /* ══ THEME TOKENS ══ */
+        --t-bg-solid: transparent;
+        --t-bg-gradient: linear-gradient(135deg, #c4a8e0 0%, #adb0e8 30%, #9db8ed 55%, #9dc0ed 100%);
+        --t-bg-color: #b8a0d4;
+        --t-surface: rgba(255,255,255,.72);
+        --t-surface2: rgba(255,255,255,.82);
+        --t-surface-dim: rgba(255,255,255,.45);
+        --t-border: rgba(0,0,0,.08);
+        --t-border2: rgba(0,0,0,.14);
+        --t-fg: #1a1a2e;
+        --t-muted: #5b6275;
+        --t-heading: #1a1a2e;
+        --t-input: rgba(255,255,255,.75);
+        --t-glass: blur(16px);
+        --t-shadow: 0 2px 20px rgba(0,0,0,.06);
+        --t-surface-hover: rgba(0,0,0,.04);
+        --t-orb-vis: none;
+        --t-bar-track: rgba(0,0,0,.07);
+        --t-nav-bg: rgba(255,255,255,.65);
+        --t-nav-link: rgba(0,0,0,.5);
+        --t-nav-link-hover: rgba(0,0,0,.88);
+      }
+      .dark {
+        --background: 240 28% 4%;
+        --foreground: 210 40% 96%;
+        --card: 222 41% 10%;
+        --card-foreground: 210 40% 96%;
+        --popover: 222 41% 10%;
+        --popover-foreground: 210 40% 96%;
+        --primary: 38 92% 50%;
+        --primary-foreground: 222 47% 7%;
+        --secondary: 222 30% 16%;
+        --secondary-foreground: 210 40% 90%;
+        --muted: 222 30% 14%;
+        --muted-foreground: 215 20% 55%;
+        --accent: 222 30% 18%;
+        --accent-foreground: 210 40% 96%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 222 30% 18%;
+        --input: 222 30% 18%;
+        --shadow-glow: 0 0 40px -10px hsl(38 92% 50% / 0.3);
+        --shadow-card: 0 8px 32px -8px hsl(222 47% 4% / 0.6);
+
+        /* -- Concept Design Variables (dark mode - from concept files) -- */
+        --c-bg: #090910;
+        --c-card: rgba(255,255,255,.04);
+        --c-bord: rgba(255,255,255,.08);
+        --c-bord2: rgba(255,255,255,.14);
+        --c-fg: #f1f1f3;
+        --c-muted: #77778a;
+        --c-amber: hsl(38 92% 50%);
+        /* Tier colors */
+        --c-bronze-c:#e8975a; --c-bronze-bg:rgba(232,151,90,.08); --c-bronze-bord:rgba(232,151,90,.25);
+        --c-silver-c:#b0bec5; --c-silver-bg:rgba(176,190,197,.07); --c-silver-bord:rgba(176,190,197,.22);
+        --c-gold-c:#ffd54f;   --c-gold-bg:rgba(255,213,79,.08);   --c-gold-bord:rgba(255,213,79,.28);
+        --c-plat-c:#80deea;   --c-plat-bg:rgba(128,222,234,.07);  --c-plat-bord:rgba(128,222,234,.25);
+
+        /* ══ THEME TOKENS ══ */
+        --t-bg-solid: #090910;
+        --t-bg-gradient: none;
+        --t-bg-color: #090910;
+        --t-surface: rgba(255,255,255,.045);
+        --t-surface2: rgba(255,255,255,.06);
+        --t-surface-dim: rgba(255,255,255,.03);
+        --t-border: rgba(255,255,255,.08);
+        --t-border2: rgba(255,255,255,.14);
+        --t-fg: #f1f1f3;
+        --t-muted: #77778a;
+        --t-heading: #ffffff;
+        --t-input: rgba(255,255,255,.04);
+        --t-glass: none;
+        --t-shadow: none;
+        --t-surface-hover: rgba(255,255,255,.06);
+        --t-orb-vis: block;
+        --t-bar-track: rgba(255,255,255,.06);
+        --t-nav-bg: rgba(5,5,8,.72);
+        --t-nav-link: rgba(255,255,255,.45);
+        --t-nav-link-hover: rgba(255,255,255,.92);
+      }
+      body {
+        font-family: var(--font-body);
+        background-color: var(--t-bg-color);
+        background-image: var(--t-bg-gradient);
+        background-attachment: fixed;
+        color: hsl(var(--foreground));
+        transition: background-color 0.4s ease, color 0.3s ease;
+      }
+      * {
+        border-color: hsl(var(--border));
+      }
+      .ti {
+        font-size: 1em;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .ui-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .ui-icon-box {
+        width: 1.9em;
+        height: 1.9em;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--t-surface-dim);
+        border: 1px solid var(--t-border);
+        color: currentColor;
+        flex-shrink: 0;
+      }
+      .ui-icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      /* Ensure fading transitions for injected HTML blocks */
+      .fade-enter {
+        opacity: 0;
+        transform: translateY(20px);
+        animation: fadeIn 0.6s ease-out forwards;
+      }
+      @keyframes fadeIn {
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+    
+    <!-- AlpineJS for replacing some framer-motion lightweight reactivity -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+      // Initialize theme early to avoid flash
+      (function() {
+        const theme = localStorage.getItem('theme') || 'dark';
+        if (theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      })();
+    </script>
+</head>
+<body class="antialiased font-body min-h-screen">
+
+    <!-- Main App Container -->
+    <div id="main-content" class="w-full relative min-h-screen">
+        <!-- Render views here via JS -->
+    </div>
+
+    <!-- Body Language Analyzer (MediaPipe) -->
+    <script src="/static/js/body_language.js?v=1"></script>
+    <!-- App JS with cache-busting -->
+    <script src="/static/js/app.js?v=26"></script>
+</body>
+</html>
