@@ -48,19 +48,12 @@ if errorlevel 1 (
 )
 
 echo.
-where ffmpeg >nul 2>nul
-if errorlevel 1 (
-  echo WARNING: FFmpeg was not found on PATH. Speech-to-text audio features may fail.
-) else (
-  for /f "tokens=*" %%A in ('ffmpeg -version 2^>nul ^| findstr /b /c:"ffmpeg version"') do echo %%A
-)
-
-echo.
 echo Setup complete.
 echo Next steps:
 echo   1. Start Ollama.
 echo   2. Install the local model: ollama pull qwen2.5:7b
 echo   3. Run diagnostics: doctor.bat
 echo   4. Start the app: run_demo.bat
+echo Speech input uses the packaged faster-whisper audio runtime; system FFmpeg is not required.
 
 endlocal

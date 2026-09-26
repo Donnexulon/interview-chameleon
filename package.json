@@ -1,0 +1,14 @@
+{
+  "name": "interview-chameleon-release-tests",
+  "version": "1.0.0-beta.1",
+  "private": true,
+  "scripts": {
+    "test:frontend": "node tests/frontend_state.test.cjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@alpinejs/csp": "3.16.1",
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0"
+  }
+}

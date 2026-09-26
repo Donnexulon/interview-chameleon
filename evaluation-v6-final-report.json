@@ -1,0 +1,435 @@
+{
+  "evaluation_version": "v6_deterministic_rubric",
+  "scoring_engine_version": "rubric-map-1",
+  "model": "qwen2.5:7b",
+  "runs_per_case": 3,
+  "case_count": 2,
+  "case_results": [
+    {
+      "id": "technical_backend_weak",
+      "comparison_group": "technical_backend",
+      "quality": "weak",
+      "module": "technical",
+      "expected_score": {
+        "min": 4,
+        "max": 35
+      },
+      "scores": [
+        25,
+        25,
+        25
+      ],
+      "mean_score": 25,
+      "score_range": 0,
+      "standard_deviation": 0.0,
+      "range_pass": true,
+      "runs": [
+        {
+          "score": 25,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 26.53,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": true,
+          "verifier_valid": true,
+          "question_scores": [
+            25,
+            25
+          ],
+          "question_diagnostics": [
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Adding an index to every column would make queries O(n) in the worst case and is generally not a good practice. Moving the entire table into memory could lead to severe performance degradation due to memory constraints.",
+                "evidence_quote": "I would add indexes to every column because an index makes every query O(1). If that is still slow I would move the table into memory."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            },
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Using local counters without any form of synchronization mechanism will lead to race conditions and inconsistent rate limiting. The candidate's approach lacks the necessary coordination between servers.",
+                "evidence_quote": "Each server can keep a counter in a local variable and reset it every minute. Since requests are random, the totals should average out across servers."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        },
+        {
+          "score": 25,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 26.86,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": true,
+          "verifier_valid": true,
+          "question_scores": [
+            25,
+            25
+          ],
+          "question_diagnostics": [
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Adding an index to every column would make queries O(n) in the worst case and is generally not a good practice. Moving the entire table into memory could lead to severe performance degradation due to memory constraints.",
+                "evidence_quote": "I would add indexes to every column because an index makes every query O(1). If that is still slow I would move the table into memory."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            },
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Using local counters without any form of synchronization mechanism will lead to race conditions and inconsistent rate limiting. The candidate's approach lacks the necessary coordination between servers.",
+                "evidence_quote": "Each server can keep a counter in a local variable and reset it every minute. Since requests are random, the totals should average out across servers."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        },
+        {
+          "score": 25,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 27.0,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": true,
+          "verifier_valid": true,
+          "question_scores": [
+            25,
+            25
+          ],
+          "question_diagnostics": [
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Adding an index to every column would make queries O(n) in the worst case and is generally not a good practice. Moving the entire table into memory could lead to severe performance degradation due to memory constraints.",
+                "evidence_quote": "I would add indexes to every column because an index makes every query O(1). If that is still slow I would move the table into memory."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            },
+            {
+              "score": 25,
+              "rubric_band": "absent",
+              "correctness": "critical_error",
+              "limiting_rule": "Correctness gate: critical error",
+              "verifier": {
+                "status": "agreed",
+                "trigger": "technical correctness gate",
+                "primary_correctness": "critical_error",
+                "verifier_correctness": "critical_error",
+                "applied_correctness": "critical_error",
+                "confidence": "high",
+                "reason": "Using local counters without any form of synchronization mechanism will lead to race conditions and inconsistent rate limiting. The candidate's approach lacks the necessary coordination between servers.",
+                "evidence_quote": "Each server can keep a counter in a local variable and reset it every minute. Since requests are random, the totals should average out across servers."
+              },
+              "confidence": {
+                "score": 88,
+                "level": "high",
+                "reasons": [
+                  "Correctness required an interpretive judgment."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        }
+      ]
+    },
+    {
+      "id": "technical_backend_strong",
+      "comparison_group": "technical_backend",
+      "quality": "strong",
+      "module": "technical",
+      "expected_score": {
+        "min": 80,
+        "max": 96
+      },
+      "scores": [
+        83,
+        83,
+        83
+      ],
+      "mean_score": 83,
+      "score_range": 0,
+      "standard_deviation": 0.0,
+      "range_pass": true,
+      "runs": [
+        {
+          "score": 83,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 18.75,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": false,
+          "verifier_valid": false,
+          "question_scores": [
+            83,
+            83
+          ],
+          "question_diagnostics": [
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            },
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        },
+        {
+          "score": 83,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 18.26,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": false,
+          "verifier_valid": false,
+          "question_scores": [
+            83,
+            83
+          ],
+          "question_diagnostics": [
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            },
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        },
+        {
+          "score": 83,
+          "evaluator_confidence": 98,
+          "elapsed_seconds": 18.27,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "verifier_invoked": false,
+          "verifier_valid": false,
+          "question_scores": [
+            83,
+            83
+          ],
+          "question_diagnostics": [
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            },
+            {
+              "score": 83,
+              "rubric_band": "strong",
+              "correctness": "correct",
+              "limiting_rule": "Rubric-weighted score; no limiting gate applied",
+              "verifier": {
+                "status": "not_requested",
+                "reason": "No verifier rule was triggered."
+              },
+              "confidence": {
+                "score": 84,
+                "level": "high",
+                "reasons": [
+                  "Rubric judgment is supported by transcript evidence."
+                ]
+              }
+            }
+          ],
+          "module_scores": {}
+        }
+      ]
+    }
+  ],
+  "ordering_checks": [
+    {
+      "comparison_group": "technical_backend",
+      "weak_score": 25,
+      "strong_score": 83,
+      "gap": 58,
+      "minimum_gap": 20,
+      "pass": true
+    }
+  ],
+  "variance_checks": [
+    {
+      "id": "technical_backend_weak",
+      "scores": [
+        25,
+        25,
+        25
+      ],
+      "score_range": 0,
+      "max_score_range": 3,
+      "pass": true
+    },
+    {
+      "id": "technical_backend_strong",
+      "scores": [
+        83,
+        83,
+        83
+      ],
+      "score_range": 0,
+      "max_score_range": 3,
+      "pass": true
+    }
+  ],
+  "errors": [],
+  "summary": {
+    "range_failures": [],
+    "ordering_failures": [],
+    "variance_failures": [],
+    "error_count": 0,
+    "passed": true
+  }
+}

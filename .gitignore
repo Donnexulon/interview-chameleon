@@ -1,5 +1,11 @@
 # Python
 __pycache__/
+.runtime/
+release/
+dist/
+build/
+desktop/bin/
+desktop/obj/
 *.py[cod]
 *.pyo
 .pytest_cache/
@@ -9,16 +15,22 @@ __pycache__/
 # Local virtual environments
 venv/
 .venv/
+.release-venv/
 
 # Local app data
 *.db
 *.sqlite
 *.sqlite3
 interview.db
+interview.db.*
+*.db.pre-*
+*.bak
+*.backup
 history.db
 static/audio/
 uploads/
 tmp/
+.preview-data-*/
 
 # Local documents and exports
 *.docx
@@ -32,9 +44,26 @@ tmp/
 *.mp3
 *.m4a
 *.webm
+*.mkv
+*.mov
+*.mp4
 *.ogg
 *.log
 .cache/
+node_modules/
+playwright-report/
+test-results/
+test-results*/
+.browser-smoke-*/
+.runtime-smoke-*/
+
+# Local design review and prototype workspaces
+design-review/
+design-concepts/
+field-strength-app/
+
+# Downloaded third-party installer prerequisites
+installer/prerequisites/*.exe
 
 # Environment and OS noise
 .env

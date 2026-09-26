@@ -1,14 +1,27 @@
 document.addEventListener('DOMContentLoaded', () => {
     const mainContent = document.getElementById('main-content');
+    const durableStorage = window.InterviewChameleonStorage || {
+        ready: Promise.resolve(),
+        setItem(key, value) {
+            localStorage.setItem(key, value);
+            return Promise.resolve(true);
+        },
+    };
+    const persistLocalValue = (key, value) => durableStorage.setItem(key, String(value));
+    const DEFAULT_MODEL_ID = 'qwen2.5:7b';
+    const FALLBACK_MODEL_CATALOG = [
+        { id: 'qwen2.5:7b', name: 'Qwen 2.5 7B', size_gb: 4.7, badge: 'Most reliable', description: 'The best choice for this beta. Fully tested for interviews and feedback.', speed: 'Balanced', certified: true, experimental: false },
+        { id: 'qwen3.5:4b', name: 'Qwen 3.5 4B', size_gb: 3.4, badge: 'Smaller and faster', description: 'A newer, lighter option for quicker responses. Still being calibrated.', speed: 'Fast', certified: false, experimental: false },
+        { id: 'granite3.3:8b', name: 'Granite 3.3 8B', size_gb: 4.9, badge: 'Structured feedback', description: 'A strong fit for business interviews and clearly organized feedback.', speed: 'Balanced', certified: false, experimental: false },
+        { id: 'phi4-mini-reasoning:3.8b', name: 'Phi-4 Mini Reasoning', size_gb: 3.2, badge: 'Deep reasoning', description: 'A compact option for technical questions, analysis, and case interviews.', speed: 'Thoughtful', certified: false, experimental: false },
+    ];
 
-    function escapeHTML(value) {
-        return String(value ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
+    const escapeHTML = window.InterviewChameleonHtmlSafety?.escapeHTML || ((value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;'));
 
     function iconName(value) {
         return String(value || 'circle').replace(/[^a-z0-9-]/gi, '') || 'circle';
@@ -88,27 +101,182 @@ document.addEventListener('DOMContentLoaded', () => {
     if (themeToggle) {
         themeToggle.addEventListener('click', () => {
             const isDark = document.documentElement.classList.toggle('dark');
-            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            persistLocalValue('theme', isDark ? 'dark' : 'light');
         });
     }
     let state = {
-        selectedModel: 'qwen2.5:7b',
+        selectedModel: DEFAULT_MODEL_ID,
+        modelCatalog: FALLBACK_MODEL_CATALOG.map(model => ({ ...model, installed: false })),
+        modelSetupCompleted: false,
         resumeText: '',
+        resumeFileName: '',
+        resumeFileMeta: '',
         targetRole: '',
         jobDescription: '',
-        interviewerPersona: { character: 'friendly', gender: 'female' },
+        interviewerPersona: null,
         selectedModule: null,
         difficulty: 'medium',
         duration: 'standard',
         chatHistory: [],
         currentSessionId: null,
+        currentSessionRecord: null,
+        pendingSessionResume: null,
+        interviewPlan: null,
+        roleIntelligence: null,
+        practiceFocus: null,
+        sessionStatus: null,
+        sessionStartedAtISO: null,
+        sessionClockStartedAt: null,
         cameraStream: null,
         cameraEnabled: true,
         blindMirror: true,
         industry: 'general',      // NEW: Industry Customization
+        focusNote: '',
         faangMode: false,          // NEW: FAANG Filter Mode
         interruptionsEnabled: false // NEW: Interruption Simulation
     };
+    // A rehearsal brief is deliberately kept in memory while the user visits
+    // AI Models from Step 4. It is cleared once the rehearsal launches so a
+    // future setup starts as a fresh brief.
+    let setupDraft = null;
+
+    function selectedModelName() {
+        return state.modelCatalog.find(model => model.id === state.selectedModel)?.name
+            || state.selectedModel
+            || 'your selected model';
+    }
+
+    const ACTIVE_SESSION_KEY = 'interview_chameleon_active_session';
+    let sessionCheckpointTimer = null;
+    let sessionCheckpointChain = Promise.resolve();
+
+    const isCompletedSession = (session) => Boolean(
+        session && (
+            session.status === 'completed'
+            || (!session.status && session.feedback && Number.isFinite(session.feedback.overall_score))
+        )
+    );
+    const isRecoverableSession = (session) => ['in_progress', 'evaluating', 'evaluation_failed'].includes(session?.status);
+
+    function sessionSettingsSnapshot() {
+        return {
+            selected_model: state.selectedModel || DEFAULT_MODEL_ID,
+            difficulty: state.difficulty || 'medium',
+            duration: state.duration || 'standard',
+            industry: state.industry || 'general',
+            interviewer_style: state.interviewerPersona?.character || 'friendly',
+            interviewer_persona: state.interviewerPersona || null,
+            faang_mode: Boolean(state.faangMode),
+            interruptions_enabled: Boolean(state.interruptionsEnabled),
+            camera_enabled: Boolean(state.cameraEnabled),
+            blind_mirror: Boolean(state.blindMirror),
+            voice_mode: state.voiceMode !== false,
+            job_description: state.jobDescription || '',
+            resume_text: state.resumeText || '',
+            resume_file_name: state.resumeFileName || '',
+            resume_file_meta: state.resumeFileMeta || '',
+            focus_context: state.practiceFocus || null,
+        };
+    }
+
+    function hydrateSessionRecord(session) {
+        if (!session) return false;
+        const settings = session.settings || {};
+        state.currentSessionRecord = session;
+        state.currentSessionId = session.id;
+        state.targetRole = session.target_role || state.targetRole || '';
+        state.selectedModule = session.module || state.selectedModule || 'general';
+        state.chatHistory = Array.isArray(session.messages)
+            ? session.messages.filter(message => !message?.isTyping)
+            : [];
+        state.difficulty = settings.difficulty || state.difficulty || 'medium';
+        state.duration = settings.duration || state.duration || 'standard';
+        state.selectedModel = settings.selected_model || state.selectedModel || DEFAULT_MODEL_ID;
+        state.industry = settings.industry || state.industry || 'general';
+        state.interviewerPersona = settings.interviewer_persona || state.interviewerPersona;
+        state.faangMode = Boolean(settings.faang_mode);
+        state.interruptionsEnabled = Boolean(settings.interruptions_enabled);
+        state.cameraEnabled = settings.camera_enabled !== false;
+        state.blindMirror = settings.blind_mirror !== false;
+        state.voiceMode = settings.voice_mode !== false;
+        state.jobDescription = settings.job_description || '';
+        state.resumeText = settings.resume_text || '';
+        state.resumeFileName = settings.resume_file_name || '';
+        state.resumeFileMeta = settings.resume_file_meta || '';
+        state.interviewPlan = session.interview_plan || null;
+        state.roleIntelligence = session.role_intelligence || session.interview_plan?.role_grounding || null;
+        state.practiceFocus = settings.focus_context || session.interview_plan?.adaptive_focus || null;
+        state.sessionStatus = session.status || 'in_progress';
+        state.sessionStartedAtISO = session.started_at || session.date || new Date().toISOString();
+        state.sessionClockStartedAt = Date.now() - Math.max(0, Number(session.duration_seconds || 0)) * 1000;
+        if (session.feedback) state.lastSessionFeedback = session.feedback;
+        if (isRecoverableSession(session)) {
+            localStorage.setItem(ACTIVE_SESSION_KEY, session.id);
+        } else {
+            localStorage.removeItem(ACTIVE_SESSION_KEY);
+        }
+        return true;
+    }
+
+    function currentSessionDuration() {
+        if (!state.sessionClockStartedAt) return Math.max(0, Number(state.currentSessionRecord?.duration_seconds || 0));
+        return Math.max(0, Math.floor((Date.now() - state.sessionClockStartedAt) / 1000));
+    }
+
+    function buildSessionCheckpoint(status = 'in_progress', extras = {}) {
+        const settings = { ...sessionSettingsSnapshot(), ...(extras.settings || {}) };
+        const payload = {
+            id: state.currentSessionId,
+            date: state.sessionStartedAtISO || new Date().toISOString(),
+            started_at: state.sessionStartedAtISO || new Date().toISOString(),
+            target_role: state.targetRole || 'General Candidate',
+            module: state.selectedModule || 'general',
+            duration_seconds: currentSessionDuration(),
+            messages: state.chatHistory.filter(message => !message?.isTyping),
+            status,
+            settings,
+            interview_plan: state.interviewPlan || undefined,
+            role_intelligence: state.roleIntelligence || undefined,
+            expected_revision: state.currentSessionRecord?.revision || undefined,
+            ...extras,
+        };
+        payload.settings = settings;
+        return payload;
+    }
+
+    function persistSessionCheckpoint(status = 'in_progress', extras = {}, options = {}) {
+        if (!state.currentSessionId) return Promise.resolve(null);
+        const payload = buildSessionCheckpoint(status, extras);
+        const save = async () => {
+            const response = await fetch('/api/sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                keepalive: Boolean(options.keepalive),
+            });
+            if (!response.ok) throw new Error(`Session checkpoint failed (${response.status})`);
+            const data = await response.json();
+            state.currentSessionRecord = data.session || state.currentSessionRecord;
+            state.sessionStatus = data.session?.status || status;
+            state.sessionHistoryCache = null;
+            if (state.sessionStatus === 'completed' || state.sessionStatus === 'abandoned') {
+                localStorage.removeItem(ACTIVE_SESSION_KEY);
+            } else {
+                localStorage.setItem(ACTIVE_SESSION_KEY, state.currentSessionId);
+            }
+            return data.session || null;
+        };
+        sessionCheckpointChain = sessionCheckpointChain.catch(() => null).then(save);
+        return sessionCheckpointChain;
+    }
+
+    function queueSessionCheckpoint(status = 'in_progress', extras = {}) {
+        if (!state.currentSessionId) return;
+        clearTimeout(sessionCheckpointTimer);
+        sessionCheckpointTimer = setTimeout(() => {
+            persistSessionCheckpoint(status, extras).catch(error => console.error('Autosave failed:', error));
+        }, 250);
+    }
 
     const MG_RUNS_KEY = 'mg_runs_v2';
     const MG_BEST_KEYS = {
@@ -204,7 +372,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         const runs = getMinigameRuns();
         runs.unshift(normalized);
-        localStorage.setItem(MG_RUNS_KEY, JSON.stringify(runs.slice(0, 60)));
+        persistLocalValue(MG_RUNS_KEY, JSON.stringify(runs.slice(0, 60)));
         return normalized;
     }
 
@@ -215,13 +383,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (game === 'salary') {
             const gain = Number(result.gain || 0);
             if (!prev || gain > Number(prev.gain || 0)) {
-                localStorage.setItem(key, JSON.stringify({ gain, score: clampScore(result.score), date: new Date().toISOString() }));
+                persistLocalValue(key, JSON.stringify({ gain, score: clampScore(result.score), date: new Date().toISOString() }));
             }
             return;
         }
         const score = clampScore(result.score);
         if (!prev || score > Number(prev.score || 0)) {
-            localStorage.setItem(key, JSON.stringify({ score, date: new Date().toISOString() }));
+            persistLocalValue(key, JSON.stringify({ score, date: new Date().toISOString() }));
         }
     }
 
@@ -531,7 +699,6 @@ document.addEventListener('DOMContentLoaded', () => {
         state.selectedModule = demo.module;
         state.chatHistory = demo.messages;
         state.lastSessionFeedback = demo.feedback;
-        state.sessionHistoryCache = null;
 
         try {
             const res = await fetch('/api/sessions', {
@@ -543,6 +710,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.warn('Demo session could not be saved to history:', error);
         }
+        // Invalidate after the save finishes so a slower home-screen refresh
+        // cannot overwrite this with a pre-save empty result.
+        state.sessionHistoryCache = null;
 
         navigate('report');
     };
@@ -598,7 +768,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Computed from session metadata at end - no LLM needed
     function buildEngagementMetrics() {
         const messages = state.chatHistory || [];
-        const userMsgs = messages.filter(m => m.role === 'user' && !m.isTyping);
+        const userMsgs = messages.filter(m => m.role === 'user' && !m.isTyping && !m.isHidden && !m.isTimeout);
         if (userMsgs.length < 2) return { composite: 0 };
 
         // Ideal word ranges per module
@@ -615,10 +785,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Response time (using timestamps if available, otherwise estimate)
         const responseTimes = [];
         for (let i = 0; i < messages.length; i++) {
-            if (messages[i].role === 'user' && messages[i].timestamp && i > 0) {
+            if (messages[i].role === 'user' && !messages[i].isHidden && messages[i].timestamp && i > 0) {
                 const prevMsg = messages.slice(0, i).reverse().find(m => m.role === 'assistant');
-                if (prevMsg && prevMsg.timestamp) {
-                    responseTimes.push((messages[i].timestamp - prevMsg.timestamp) / 1000);
+                const timingStart = messages[i].responseStartedTimestamp || prevMsg?.answerReadyTimestamp || prevMsg?.timestamp;
+                if (timingStart) {
+                    responseTimes.push((messages[i].timestamp - timingStart) / 1000);
                 }
             }
         }
@@ -827,7 +998,7 @@ document.addEventListener('DOMContentLoaded', () => {
             extended: { questions: 20, desc: 'This is an extended deep-dive session with about 20 questions. Go deep on topics, ask many follow-ups, and thoroughly explore the candidate\'s experience.' }
         };
 
-        const char = characterPrompts[state.interviewerPersona.character] || characterPrompts.friendly;
+        const char = characterPrompts[state.interviewerPersona?.character] || characterPrompts.friendly;
         const mod = modulePrompts[state.selectedModule] || modulePrompts.general;
         const diff = difficultyPrompts[state.difficulty] || difficultyPrompts.medium;
         const dur = durationSettings[state.duration] || durationSettings.standard;
@@ -874,12 +1045,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         prompt += `## Rules\n`;
         prompt += `- Ask ONE question at a time and wait for the candidate's response.\n`;
-        prompt += `- Start with a brief, natural greeting appropriate to your persona.\n`;
+        prompt += `- On the first turn only, use at most one short welcome sentence before the question. Do not add a long introduction.\n`;
         prompt += `- Never break character or acknowledge that you are an AI.\n`;
         prompt += `- Adapt your follow-up questions based on the candidate's answers.\n`;
         prompt += `- If the candidate's answer is strong, acknowledge it briefly before moving on.\n`;
         prompt += `- If the candidate's answer is weak or vague, probe deeper or offer gentle guidance to improve.\n`;
-        prompt += `- Keep your responses concise (2-4 sentences for questions, 1-2 for transitions).\n`;
+        prompt += `- Keep each question concise: no more than 45 words and normally 1-2 sentences. Use the transcript for context, not a long preamble.\n`;
         prompt += `- Do not list multiple questions at once.\n`;
         prompt += `- If you see a message starting with '[TIMEOUT]', it means the candidate's time for the previous question has expired. You must acknowledge this naturally and proactively in your persona (e.g., "You're taking so long", "I haven't heard from you in a while", "We need to keep moving"). Do NOT give the answer; instead, immediately proceed to the next question or topic.\n`;
 
@@ -946,26 +1117,31 @@ document.addEventListener('DOMContentLoaded', () => {
     ];
 
     // Derives which badge IDs are currently earned given session history
-    async function computeBadges() {
-        let sessions = [];
-        try {
-            const res = await fetch('/api/sessions');
-            const data = await res.json();
-            sessions = data.sessions || [];
-        } catch (e) { sessions = []; }
+    async function computeBadges(providedSessions = null) {
+        await durableStorage.ready;
+        let sessions = Array.isArray(providedSessions) ? providedSessions : [];
+        if (!Array.isArray(providedSessions)) {
+            try {
+                const res = await fetch('/api/sessions');
+                const data = await res.json();
+                sessions = data.sessions || [];
+            } catch (e) { sessions = []; }
+        }
 
-        const scored = sessions.filter(s => s.feedback && typeof s.feedback.overall_score === 'number');
-        const totalSessions = sessions.length;
+        const completedSessions = sessions.filter(isCompletedSession);
+        const scored = completedSessions.filter(s => s.feedback && typeof s.feedback.overall_score === 'number');
+        const achievementSessions = scored;
+        const totalSessions = achievementSessions.length;
         const scores = scored.map(s => s.feedback.overall_score);
 
-        const modulesUsed = new Set(sessions.map(s => s.module));
-        const hasResume = sessions.some(s => s.resume_used);
-        const quickSessions = sessions.filter(s => s.duration === 'quick' || (s.duration_seconds && s.duration_seconds < 300)).length;
-        const extendedSessions = sessions.filter(s => s.duration === 'extended').length;
-        const faangSessions = JSON.parse(localStorage.getItem('ai_coach_faang_sessions') || '0');
-        const industriesUsed = new Set(JSON.parse(localStorage.getItem('ai_coach_industries_used') || '[]'));
-        const noTimeoutSessions = JSON.parse(localStorage.getItem('ai_coach_no_timeout_sessions') || '0');
-        const salarySessions = sessions.filter(s => s.module === 'salary').length;
+        const modulesUsed = new Set(achievementSessions.map(s => s.module));
+        const hasResume = achievementSessions.some(s => s.resume_used);
+        const quickSessions = achievementSessions.filter(s => s.duration === 'quick' || (s.duration_seconds && s.duration_seconds < 300)).length;
+        const extendedSessions = achievementSessions.filter(s => s.duration === 'extended').length;
+        const faangSessions = readStoredJSON('ai_coach_faang_sessions', 0);
+        const industriesUsed = new Set(readStoredJSON('ai_coach_industries_used', []));
+        const noTimeoutSessions = readStoredJSON('ai_coach_no_timeout_sessions', 0);
+        const salarySessions = achievementSessions.filter(s => s.module === 'salary').length;
 
         // 5 consecutive 90+ check
         let consec90 = 0, maxConsec90 = 0;
@@ -986,7 +1162,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (scores.length >= 2) onTheRise = (scores[scores.length - 1] - scores[scores.length - 2]) >= 25;
 
         // Hard mode modules completed
-        const hardModules = new Set(sessions.filter(s => s.difficulty === 'hard').map(s => s.module));
+        const hardModules = new Set(achievementSessions.filter(s => s.difficulty === 'hard').map(s => s.module));
 
         const earned = new Set();
         // Bronze
@@ -1139,218 +1315,572 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
 
-    // Full Achievements page renderer
+    // Full Achievements page renderer — the Practice Record
     async function renderAchievements() {
-        mainContent.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--t-bg-solid)"><div style="width:24px;height:24px;border:2px solid #e8975a;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite"></div></div>`;
-        const earned = await computeBadges();
+        mainContent.innerHTML = `<div class="ach-record-loading"><span>Opening the practice record…</span></div>`;
+
+        let sessions = [];
+        try {
+            if (!state.sessionHistoryCache) {
+                const response = await fetch('/api/sessions');
+                const data = await response.json();
+                state.sessionHistoryCache = data.sessions || [];
+            }
+            sessions = state.sessionHistoryCache || [];
+        } catch (error) { sessions = []; }
+
+        const earned = await computeBadges(sessions);
         const totalXP = calcXP(earned);
         const lvl = getLevel(totalXP);
         const ld = LEVELS[lvl - 1];
-        const xpPct = ld.next > ld.min ? Math.round(((totalXP - ld.min) / (ld.next - ld.min)) * 100) : 100;
-        const earnedCount = BADGES.filter(b => earned.has(b.id)).length;
+        const xpPct = ld.next > ld.min ? Math.max(0, Math.min(100, Math.round(((totalXP - ld.min) / (ld.next - ld.min)) * 100))) : 100;
+        const earnedBadges = BADGES.filter(badge => earned.has(badge.id));
+        const earnedCount = earnedBadges.length;
+
+        const practiceDays = [...new Set(sessions.map(session => {
+            const date = new Date(session.date || session.created_at || 0);
+            return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+        }).filter(Boolean))].sort().reverse();
+        let practiceStreak = 0;
+        practiceDays.forEach((day, index) => {
+            if (index === 0) { practiceStreak = 1; return; }
+            const previous = new Date(practiceDays[index - 1] + 'T00:00:00');
+            const current = new Date(day + 'T00:00:00');
+            if (Math.round((previous - current) / 86400000) === 1 && practiceStreak === index) practiceStreak += 1;
+        });
+
+        const coachNote = sessions.length === 0
+            ? 'Your first rehearsal is the only mark that matters today. Begin, listen closely, and let the record grow from there.'
+            : earnedCount < 5
+                ? 'The foundations are taking shape. Keep returning to the room; consistency will do more than one perfect answer.'
+                : earnedCount < 15
+                    ? 'You are building real momentum. Sharpen the stories that still feel uncertain and make every result specific.'
+                    : 'The record shows serious craft. Keep pressure-testing the details—mastery lives in the choices you can defend.';
+
+        const sectionDefs = [
+            { key: 'foundations', title: 'Foundations', copy: 'Build the habits.', badges: BADGES.filter(b => b.tier === 'bronze') },
+            { key: 'craft', title: 'Craft', copy: 'Sharpen what you say.', badges: BADGES.filter(b => b.tier === 'silver') },
+            { key: 'mastery', title: 'Mastery', copy: 'Lead with presence.', badges: BADGES.filter(b => b.tier === 'gold' || b.tier === 'platinum') },
+        ];
+        const patchShapes = ['round', 'arch', 'circle', 'hex', 'shield', 'square', 'diamond', 'ticket', 'round', 'arch', 'hex'];
+        const patchPalette = [
+            ['#8d3b2b', '#eadbc1'], ['#174e3e', '#eee1c8'], ['#183a58', '#eadcc2'],
+            ['#222c35', '#e8d7ba'], ['#9a422f', '#eadcc2'], ['#d7c5a7', '#1a2730'],
+            ['#174e3e', '#eadcc2'], ['#1f3448', '#e7d7bd'], ['#7e3528', '#eadcc2'],
+        ];
+
+        const renderMark = (badge, index) => {
+            const isEarned = earned.has(badge.id);
+            const [patch, thread] = patchPalette[index % patchPalette.length];
+            const extra = index >= 6 ? ' ach-mark-extra' : '';
+            return `<article class="ach-mark ${isEarned ? 'is-earned' : 'is-locked'}${extra}" title="${escapeHTML(isEarned ? badge.desc : badge.hint)}">
+                <div class="ach-patch ach-patch-${patchShapes[index % patchShapes.length]}" style="--patch:${patch};--thread:${thread}">
+                    <span class="ach-patch-stitch"></span>
+                    <span class="ach-patch-icon">${isEarned ? ti(badge.icon) : ti('lock')}</span>
+                </div>
+                <strong>${escapeHTML(badge.name)}</strong>
+                <small>${isEarned ? 'Earned · +' + badge.xp + ' XP' : escapeHTML(badge.hint)}</small>
+            </article>`;
+        };
+
+        const sectionsHTML = sectionDefs.map(section => {
+            const sectionEarned = section.badges.filter(b => earned.has(b.id)).length;
+            return `<section class="ach-mark-row ach-${section.key}">
+                <header class="ach-row-label">
+                    <span>${section.title}</span>
+                    <p>${section.copy}</p>
+                    <small>${sectionEarned} / ${section.badges.length} earned</small>
+                </header>
+                <div class="ach-mark-grid">${section.badges.map(renderMark).join('')}</div>
+            </section>`;
+        }).join('');
+
+        const recentHTML = earnedBadges.length
+            ? earnedBadges.slice(-6).reverse().map((badge, index) => `<div class="ach-recent-stamp ach-recent-${index % 3}">
+                <span>${String(earnedBadges.length - index).padStart(2, '0')}</span>
+                <strong>${escapeHTML(badge.name)}</strong>
+            </div>`).join('')
+            : `<p class="ach-recent-empty">Complete a rehearsal and the first ink stamp will appear here.</p>`;
 
         mainContent.innerHTML = `
-            <style>
-                .ach-wrap{position:relative;min-height:100vh;background:var(--t-bg-solid);font-family:'Inter',system-ui,sans-serif;color:var(--t-fg);overflow-x:hidden}
-                .ach-orbs{pointer-events:none;position:fixed;inset:0;z-index:0;overflow:hidden}
-                .ach-orb{position:absolute;border-radius:50%;filter:blur(100px)}
-                .ach-o1{width:700px;height:700px;background:hsla(30,70%,50%,.05);top:-250px;left:-200px;animation:achd1 20s ease-in-out infinite}
-                .ach-o2{width:500px;height:500px;background:hsla(270,80%,65%,.07);bottom:-150px;right:-120px;animation:achd2 24s ease-in-out infinite}
-                .ach-o3{width:420px;height:420px;background:hsla(190,80%,60%,.06);top:40%;right:15%;animation:achd3 28s ease-in-out infinite}
-                @keyframes achd1{0%,100%{transform:translate(0,0)}50%{transform:translate(80px,60px)}}
-                @keyframes achd2{0%,100%{transform:translate(0,0)}50%{transform:translate(-70px,-80px)}}
-                @keyframes achd3{0%,100%{transform:translate(0,0)}50%{transform:translate(50px,-60px)}}
-                .ach-page{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:40px 36px 80px}
-                .ach-topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:36px}
-                .ach-back{font-size:13px;font-weight:600;color:var(--t-muted);background:none;border:none;cursor:pointer;transition:color .2s;padding:0;display:inline-flex;align-items:center;gap:7px}
-                .ach-back:hover{color:var(--t-fg)}
-                .ach-counter{font-size:13px;font-weight:600;color:var(--t-muted)}
-                .ach-counter b{color:var(--t-fg)}
-                .ach-hero{display:grid;grid-template-columns:auto 1fr auto;gap:32px;align-items:center;background:var(--t-surface);border:1px solid var(--t-border);border-radius:22px;padding:32px;margin-bottom:32px;position:relative;overflow:hidden}
-                .ach-hero-bg{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 120%,rgba(255,213,79,.05),transparent 70%);pointer-events:none}
-                .lvl-ring{position:relative;width:120px;height:120px;flex-shrink:0}
-                .lvl-ring svg{position:absolute;inset:0;transform:rotate(-90deg)}
-                .lvl-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
-                .lvl-num{font-size:28px;font-weight:900;color:var(--t-heading)}
-                .lvl-lbl{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--t-muted)}
-                .ach-info .ach-title{font-size:2rem;font-weight:900;letter-spacing:-.03em;color:var(--t-heading);margin-bottom:4px}
-                .ach-info .ach-sub{font-size:14px;color:var(--t-muted);margin-bottom:18px}
-                .xp-row{display:flex;justify-content:space-between;font-size:11px;font-weight:600;color:var(--t-muted);margin-bottom:6px}
-                .xp-row .xp-next{color:#ffd54f}
-                .xp-bg{height:8px;background:var(--t-bar-track);border-radius:99px;overflow:hidden}
-                .xp-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#e8975a,#ffd54f,#80deea);box-shadow:0 0 14px rgba(255,213,79,.35);transition:width 1.2s cubic-bezier(.4,0,.2,1)}
-                .ach-stats{display:flex;flex-direction:column;gap:14px;align-items:flex-end;text-align:right}
-                .ach-stat-val{font-size:1.6rem;font-weight:800;letter-spacing:-.02em}
-                .ach-stat-lbl{font-size:11px;color:var(--t-muted)}
-                .ach-sec-hdr{display:flex;align-items:center;margin-bottom:14px}
-                .ach-sec-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--t-muted)}
-                .recent-strip{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;margin-bottom:32px;scrollbar-width:none}
-                .recent-strip::-webkit-scrollbar{display:none}
-                .mini-badge{flex-shrink:0;width:72px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 8px;border-radius:14px;border:1px solid var(--t-border2);background:var(--t-surface);transition:transform .2s;cursor:default}
-                .mini-badge:hover{transform:translateY(-3px)}
-                .mini-ico{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px}
-                .mini-name{font-size:9px;font-weight:700;text-align:center;line-height:1.3}
-                .tier-section{margin-bottom:36px}
-                .tier-header{display:flex;align-items:center;gap:12px;padding:16px 20px;border-radius:14px 14px 0 0;border:1px solid var(--t-border2);border-bottom:none;background:var(--t-surface)}
-                .tier-icon{font-size:22px}
-                .tier-info{flex:1}
-                .tier-name{font-size:14px;font-weight:800;letter-spacing:-.01em}
-                .tier-sub{font-size:11px;color:var(--t-muted);margin-top:2px}
-                .tier-pill{font-size:11px;font-weight:700;padding:3px 12px;border-radius:99px;border:1px solid}
-                .tier-prog-wrap{width:100px;margin-left:14px}
-                .tier-prog-lbl{font-size:10px;font-weight:600;color:var(--t-muted);margin-bottom:4px;text-align:right}
-                .tier-prog-bg{height:5px;background:var(--t-border);border-radius:99px;overflow:hidden}
-                .tier-prog-fill{height:100%;border-radius:99px;transition:width 1s ease}
-                .badges-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:12px;padding:16px;background:rgba(0,0,0,.18);border:1px solid var(--t-border2);border-radius:0 0 14px 14px}
-                .badge-card{border-radius:16px;border:1px solid var(--t-border);background:var(--t-surface);padding:20px 16px 16px;display:flex;flex-direction:column;align-items:center;text-align:center;position:relative;overflow:hidden;transition:all .3s;cursor:default}
-                .badge-card.earned{cursor:pointer}
-                .badge-card.earned:hover{transform:translateY(-4px)}
-                .badge-card.locked{opacity:.5;filter:grayscale(.55)}
-                .badge-shell{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px;position:relative;flex-shrink:0}
-                .badge-ring{position:absolute;inset:0;border-radius:50%;border:2px solid}
-                .badge-glow{position:absolute;inset:-4px;border-radius:50%;filter:blur(8px);opacity:0;transition:opacity .3s}
-                .badge-card.earned:hover .badge-glow{opacity:.5}
-                .lock-ov{position:absolute;inset:0;border-radius:50%;background:var(--t-surface);display:flex;align-items:center;justify-content:center;font-size:18px}
-                .badge-nm{font-size:13px;font-weight:700;color:var(--t-fg);margin-bottom:4px}
-                .badge-card.locked .badge-nm{color:var(--t-muted)}
-                .badge-ds{font-size:11px;color:var(--t-muted);line-height:1.5}
-                .badge-ht{font-size:10px;color:var(--t-muted);line-height:1.5;font-style:italic}
-                .xp-tag{margin-top:10px;font-size:10px;font-weight:700;padding:3px 10px;border-radius:99px;border:1px solid}
-                .earned-tag{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
-                @keyframes ach-shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}
-                .badge-card.earned::after{content:'';position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,var(--t-surface),transparent);animation:ach-shimmer 3.5s ease-in-out infinite}
-                .badge-card.earned.plat::after{background:linear-gradient(90deg,transparent,rgba(128,222,234,.07),transparent);animation:ach-shimmer 2.5s ease-in-out infinite}
-                .plat-sparkle{position:absolute;pointer-events:none}
-                .plat-sparkle::before,.plat-sparkle::after{content:'\\2726';position:absolute;font-size:9px;color:rgba(128,222,234,.35);animation:sp-float 4s ease-in-out infinite}
-                .plat-sparkle::before{top:6px;left:10px}
-                .plat-sparkle::after{top:14px;right:8px;animation-delay:1.8s;font-size:7px}
-                @keyframes sp-float{0%,100%{opacity:.2;transform:translateY(0)}50%{opacity:.75;transform:translateY(-5px)}}
-                @media(max-width:768px){.ach-hero{grid-template-columns:1fr;text-align:center;gap:20px}.ach-stats{flex-direction:row;justify-content:center;gap:24px}.lvl-ring{margin:0 auto}}
-            </style>
-
-            <div class="ach-wrap">
-                <div class="ach-orbs"><div class="ach-orb ach-o1"></div><div class="ach-orb ach-o2"></div><div class="ach-orb ach-o3"></div></div>
-                ${starsHTML('ach-stars')}
-                <div class="ach-page">
-                    <div class="ach-topbar">
-                        <button class="ach-back" onclick="window.nav('hero')">${ti('arrow-left')} Back to Home</button>
-                        <div class="ach-counter"><b>${earnedCount}</b> / ${BADGES.length} badges unlocked</div>
+            <div class="ach-wrap ach-practice-record">
+                <header class="ach-record-top">
+                    <button class="ach-record-brand" type="button" onclick="window.nav('hero')" aria-label="Interview Chameleon home">
+                        <img class="ach-record-brand-mark" src="/static/assets/brand/interview-chameleon-mark.png" alt="">
+                        <span class="ach-record-brand-copy">Interview<br>Chameleon</span>
+                    </button>
+                    <h1>The Practice Record</h1>
+                    <div class="ach-record-actions">
+                        <span><b>${earnedCount}</b> / ${BADGES.length} marks earned</span>
+                        <button class="ach-view-all" onclick="window._achToggleAll(this)">View all marks</button>
                     </div>
+                </header>
 
-                    <div class="ach-hero">
-                        <div class="ach-hero-bg"></div>
-                        <div class="lvl-ring">
-                            <svg viewBox="0 0 120 120">
-                                <circle cx="60" cy="60" r="52" fill="none" stroke="var(--t-border)" stroke-width="8"/>
-                                <circle cx="60" cy="60" r="52" fill="none" stroke="url(#achLvlGrad)" stroke-width="8"
-                                    stroke-linecap="round" id="ach-ring-fill"
-                                    stroke-dasharray="326.7" stroke-dashoffset="326.7"
-                                    style="filter:drop-shadow(0 0 5px rgba(255,213,79,.4));transition:stroke-dashoffset 1.3s cubic-bezier(.4,0,.2,1)"/>
-                                <defs>
-                                    <linearGradient id="achLvlGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                                        <stop offset="0%" stop-color="#e8975a"/>
-                                        <stop offset="50%" stop-color="#ffd54f"/>
-                                        <stop offset="100%" stop-color="#80deea"/>
-                                    </linearGradient>
-                                </defs>
-                            </svg>
-                            <div class="lvl-center">
-                                <div class="lvl-num">${lvl}</div>
-                                <div class="lvl-lbl">Level</div>
-                            </div>
-                        </div>
-                        <div class="ach-info">
-                            <div class="ach-title">${ld.name}</div>
-                            <div class="ach-sub">Keep unlocking badges to rise through the tiers - Platinum awaits.</div>
-                            <div class="xp-row"><span>${totalXP} XP</span><span class="xp-next">Next: ${ld.next} XP</span></div>
-                            <div class="xp-bg"><div class="xp-fill" id="ach-xp-fill" style="width:0%"></div></div>
-                        </div>
-                        <div class="ach-stats">
-                            <div><div class="ach-stat-val" style="color:#80deea">${BADGES.filter(b => b.tier === 'platinum' && earned.has(b.id)).length}</div><div class="ach-stat-lbl">Platinum</div></div>
-                            <div><div class="ach-stat-val" style="color:#ffd54f">${BADGES.filter(b => b.tier === 'gold' && earned.has(b.id)).length}</div><div class="ach-stat-lbl">Gold</div></div>
-                            <div><div class="ach-stat-val" style="color:#b0bec5">${BADGES.filter(b => b.tier === 'silver' && earned.has(b.id)).length}</div><div class="ach-stat-lbl">Silver</div></div>
-                            <div><div class="ach-stat-val" style="color:#e8975a">${BADGES.filter(b => b.tier === 'bronze' && earned.has(b.id)).length}</div><div class="ach-stat-lbl">Bronze</div></div>
-                        </div>
-                    </div>
+                <main class="ach-ledger" style="--xp-angle:${Math.round(xpPct * 1.8)}deg">
+                    <aside class="ach-passport">
+                        <div class="ach-passport-kicker">Rehearsal passport</div>
+                        <div class="ach-passport-watermark">${ti('school')}</div>
+                        <div class="ach-passport-level"><span>Level</span><b>${lvl}</b></div>
+                        <h2>${escapeHTML(ld.name)}</h2>
+                        <p class="ach-passport-motto">You turn practice into presence.</p>
 
-                    <div class="ach-sec-hdr"><div class="ach-sec-title">${ti('trophy')} Recently Earned</div></div>
-                    <div class="recent-strip">
-                        ${BADGES.filter(b => earned.has(b.id)).slice(-10).reverse().map(b => {
-            const t = TIER_META[b.tier];
-            return `<div class="mini-badge"><div class="mini-ico" style="background:${t.bg};border:1.5px solid ${t.bord};color:${t.color}">${ti(b.icon)}</div><div class="mini-name" style="color:${t.color}">${b.name}</div></div>`;
-        }).join('')}
-                    </div>
+                        <div class="ach-passport-gauge" aria-label="${xpPct}% progress to the next level">
+                            <div class="ach-passport-arc"></div>
+                            <strong>${totalXP.toLocaleString()} <span>/ ${ld.next.toLocaleString()} XP</span></strong>
+                        </div>
 
-                    ${'platinum,gold,silver,bronze'.split(',').map(tier => {
-            const t = TIER_META[tier];
-            const bs = BADGES.filter(b => b.tier === tier);
-            const te = bs.filter(b => earned.has(b.id)).length;
-            const pctT = Math.round((te / bs.length) * 100);
-            const isPlat = tier === 'platinum';
-            return `<div class="tier-section">
-                            <div class="tier-header" style="border-color:${t.bord}">
-                                <span class="tier-icon">${ti(t.icon)}</span>
-                                <div class="tier-info">
-                                    <div class="tier-name" style="color:${t.color}">${t.label}</div>
-                                    <div class="tier-sub">${t.sub}</div>
-                                </div>
-                                <span class="tier-pill" style="color:${t.color};border-color:${t.bord};background:${t.bg}">${te}/${bs.length}</span>
-                                <div class="tier-prog-wrap">
-                                    <div class="tier-prog-lbl">${pctT}%</div>
-                                    <div class="tier-prog-bg"><div class="tier-prog-fill" style="width:${pctT}%;background:${t.color}"></div></div>
-                                </div>
-                            </div>
-                            <div class="badges-grid">
-                                ${bs.map(b => {
-                const isE = earned.has(b.id);
-                return `<div class="badge-card ${isE ? 'earned' : 'locked'} ${isPlat && isE ? 'plat' : ''}" style="${isE ? 'border-color:' + t.bord + ';background:' + t.bg : ''}">
-                                        ${isPlat && isE ? '<div class="plat-sparkle"></div>' : ''}
-                                        <div class="badge-shell" style="background:${isE ? t.bg : 'var(--t-surface)'}">
-                                            <div class="badge-ring" style="border-color:${isE ? t.bord : 'var(--t-border)'}"></div>
-                                            <div class="badge-glow" style="background:${t.color}"></div>
-                                            <span style="${isE ? '' : 'filter:grayscale(1);opacity:.3'}">${ti(b.icon)}</span>
-                                            ${!isE ? `<div class="lock-ov">${ti('lock')}</div>` : ''}
-                                        </div>
-                                        <div class="badge-nm">${b.name}</div>
-                                        <div class="${isE ? 'badge-ds' : 'badge-ht'}">${isE ? b.desc : b.hint}</div>
-                                        <div class="xp-tag" style="color:${isE ? t.color : 'var(--t-muted)'};border-color:${isE ? t.bord : 'var(--t-border2)'};background:${isE ? t.bg : 'transparent'}">+${b.xp} XP</div>
-                                    </div>`;
-            }).join('')}
-                            </div>
-                        </div>`;
-        }).join('')}
+                        <div class="ach-passport-stats">
+                            <div><b>${sessions.length}</b><span>Rehearsals<br>completed</span></div>
+                            <div><b>${practiceStreak}</b><span>Day<br>streak</span></div>
+                        </div>
+
+                        <div class="ach-coach-note">
+                            <span>A note from your coach</span>
+                            <p>${escapeHTML(coachNote)}</p>
+                            <i>— J.</i>
+                        </div>
+                        <div class="ach-passport-seal"><span>Keep going</span>${ti('star')}<small>The work is working</small></div>
+                    </aside>
+
+                    <section class="ach-marks-page">
+                        ${sectionsHTML}
+                        <section class="ach-recent-row">
+                            <header><span>Recently<br>earned</span></header>
+                            <div class="ach-recent-stamps">${recentHTML}</div>
+                        </section>
+                    </section>
+                </main>
+            </div>`;
+
+        window._achToggleAll = (button) => {
+            const record = document.querySelector('.ach-practice-record');
+            if (!record) return;
+            const showingAll = record.classList.toggle('show-all-marks');
+            button.textContent = showingAll ? 'Show record view' : 'View all marks';
+            button.setAttribute('aria-expanded', String(showingAll));
+        };
+
+        requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }));
+    }
+
+    function renderModelManager(options = {}) {
+        const returnToSetup = options.returnTo === 'setup';
+        let managerActive = true;
+        let downloadController = null;
+        const leaveModelManager = () => {
+            managerActive = false;
+            downloadController?.abort();
+        };
+        const returnFromModelManager = () => {
+            leaveModelManager();
+            return returnToSetup
+                ? navigate('setup', { resumeDraft: true })
+                : navigate('hero');
+        };
+        const returnToHome = () => {
+            leaveModelManager();
+            navigate('hero');
+            checkForRecoverableSession();
+        };
+        const enteredForFirstRun = !state.modelSetupCompleted;
+        let modelStatus = {
+            ollama_connected: false,
+            ollama_installed: null,
+            catalog: state.modelCatalog,
+            selected_model: state.selectedModel,
+            model_setup_completed: state.modelSetupCompleted,
+            selected_ready: false,
+            has_supported_model: false,
+        };
+        let chosenModel = state.selectedModel || DEFAULT_MODEL_ID;
+        let loading = true;
+        let pulling = false;
+        let pullPercent = 0;
+        let pullCompleted = 0;
+        let pullTotal = 0;
+        let downloadInterrupted = false;
+        let interruptedModelId = '';
+        let showCoachPicker = !enteredForFirstRun;
+        let statusMessage = '';
+        let statusKind = 'checking';
+        let progressPaint = 0;
+
+        const chosen = () => modelStatus.catalog.find(model => model.id === chosenModel)
+            || modelStatus.catalog[0]
+            || FALLBACK_MODEL_CATALOG[0];
+
+        const apiError = async (response, fallback) => {
+            try {
+                const body = await response.json();
+                return body?.error?.message || body?.detail || fallback;
+            } catch (_) {
+                return fallback;
+            }
+        };
+
+        const formatBytes = value => {
+            const bytes = Number(value) || 0;
+            if (!bytes) return '0 MB';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+            const amount = bytes / (1024 ** unit);
+            return `${amount >= 10 || unit < 2 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+        };
+
+        const downloadedCopy = () => pullTotal
+            ? `${formatBytes(pullCompleted)} of ${formatBytes(pullTotal)}`
+            : `${Math.round(pullPercent)}% complete`;
+
+        const scheduleDownloadProgressUpdate = () => {
+            if (progressPaint) return;
+            progressPaint = window.requestAnimationFrame(() => {
+                progressPaint = 0;
+                const progress = mainContent.querySelector('.mm-state-progress');
+                const bar = progress?.querySelector('span');
+                const copy = mainContent.querySelector('.mm-state-progress-copy');
+                const liveStatus = mainContent.querySelector('.mm-download-live');
+                if (!progress || !bar || !copy) return;
+                const rounded = Math.round(pullPercent);
+                progress.setAttribute('aria-valuenow', String(rounded));
+                progress.setAttribute('aria-valuetext', `${rounded}% — ${downloadedCopy()}`);
+                bar.style.width = `${pullPercent}%`;
+                copy.textContent = `${rounded}% · ${downloadedCopy()}`;
+                if (liveStatus) liveStatus.textContent = statusMessage;
+            });
+        };
+
+        function draw(focusKey = '') {
+            // An in-flight status or download request may finish after the user
+            // has gone back to Setup. Never let that stale closure repaint the
+            // Model Manager over the restored briefing.
+            if (!managerActive) return;
+            const choice = chosen();
+            const downloading = pulling && !choice.installed;
+            const canContinue = Boolean(modelStatus.model_setup_completed && modelStatus.selected_ready);
+            const connected = Boolean(modelStatus.ollama_connected);
+            const ollamaInstalled = connected || modelStatus.ollama_installed === true;
+            const catalog = modelStatus.catalog.length ? modelStatus.catalog : state.modelCatalog;
+            const showReady = enteredForFirstRun && canContinue && !showCoachPicker;
+            const activeStep = showReady || pulling || downloadInterrupted ? 3 : (!connected || loading) ? 1 : 2;
+            const stepClass = step => step < activeStep ? 'is-complete' : step === activeStep ? 'is-active' : '';
+            const stepper = enteredForFirstRun ? `
+              <ol class="mm-stepper" aria-label="Setup progress">
+                <li class="mm-step ${stepClass(1)}" ${activeStep === 1 ? 'aria-current="step"' : ''}><span class="mm-step-number">${activeStep > 1 ? ti('check') : '1'}</span><span>Start Ollama</span></li>
+                <li class="mm-step ${stepClass(2)}" ${activeStep === 2 ? 'aria-current="step"' : ''}><span class="mm-step-number">${activeStep > 2 ? ti('check') : '2'}</span><span>Choose your coach</span></li>
+                <li class="mm-step ${stepClass(3)}" ${activeStep === 3 ? 'aria-current="step"' : ''}><span class="mm-step-number">3</span><span>Download and continue</span></li>
+              </ol>` : '<div class="mm-manager-title"><span>AI Models</span><small>Download or switch your local interview coach</small></div>';
+            const modelPicker = `
+              <div class="mm-picker-stage">
+                ${enteredForFirstRun ? '' : `<div class="mm-engine-ready" role="status"><span>${ti('check')}</span><strong>Ollama is running</strong><button class="mm-check" type="button">Check again</button></div>`}
+                <section class="mm-coaches">
+                <div class="mm-section-head"><div>${enteredForFirstRun ? '<p class="mm-kicker">Step 2 of 3</p>' : ''}<h1>Choose your interview coach</h1><p>Pick one model to begin. You can add or switch models later.</p></div><span class="mm-private-copy">${ti('lock')} Runs privately on this computer</span></div>
+                <div class="mm-grid" role="radiogroup" aria-label="Choose a local AI model">
+                  ${catalog.map(model => `
+                    <button class="mm-card" type="button" role="radio" aria-checked="${model.id === chosenModel}" tabindex="${model.id === chosenModel ? '0' : '-1'}" data-focus-key="model:${escapeHTML(model.id)}" data-model-id="${escapeHTML(model.id)}">
+                      <span class="mm-card-top"><span class="mm-badge">${escapeHTML(model.badge)}</span>${model.installed ? '<span class="mm-installed">Installed</span>' : ''}</span>
+                      <h3>${escapeHTML(model.name)}</h3>
+                      <p>${escapeHTML(model.description)}</p>
+                      <span class="mm-meta"><span>${ti('download')} About ${escapeHTML(model.size_gb)} GB</span><span>${ti('gauge')} ${escapeHTML(model.speed)}</span></span>
+                    </button>`).join('')}
                 </div>
-            </div>
-        `;
+                <div class="mm-choice">
+                  <div class="mm-choice-copy"><strong>${escapeHTML(choice.name)}</strong><span>${choice.installed ? (choice.id === modelStatus.selected_model && modelStatus.model_setup_completed ? 'This is your active model.' : 'Already on this computer and ready to select.') : `One-time download: about ${choice.size_gb} GB.`}</span></div>
+                  ${choice.installed && choice.id === modelStatus.selected_model && modelStatus.model_setup_completed
+                      ? (returnToSetup ? `<button class="mm-return-setup" type="button">Continue with ${escapeHTML(choice.name)}</button>` : '')
+                      : `<button class="mm-action" type="button">${choice.installed ? 'Use this model' : `Download ${choice.size_gb} GB`}</button>`}
+                </div>
+                ${!choice.installed ? '<p class="mm-note">Downloads can take several minutes. Keep Ollama and Interview Chameleon open until the download finishes.</p>' : ''}
+                </section>
+              </div>`;
+            let stage;
+            if (pulling) {
+                stage = `
+                  <section class="mm-state-panel mm-download-stage" aria-labelledby="mm-state-heading">
+                    <p class="mm-kicker">Step 3 of 3</p>
+                    <h1 id="mm-state-heading">${downloading ? `Downloading ${escapeHTML(choice.name)}` : `Activating ${escapeHTML(choice.name)}`}</h1>
+                    <p>${downloading ? 'Your coach will be ready soon.' : 'Finishing your model selection.'}</p>
+                    ${downloading ? `<div class="mm-state-progress" role="progressbar" aria-label="Model download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pullPercent)}" aria-valuetext="${Math.round(pullPercent)}% — ${escapeHTML(downloadedCopy())}"><span style="width:${pullPercent}%"></span></div><strong class="mm-state-progress-copy">${Math.round(pullPercent)}% · ${escapeHTML(downloadedCopy())}</strong><span class="sr-only mm-download-live" aria-live="polite">${escapeHTML(statusMessage)}</span><button class="mm-cancel" type="button" data-focus-key="pause-download">Pause download</button><small>${ti('lock')} Keep this window open while downloading.</small>` : '<span class="mm-spinner" aria-hidden="true"></span>'}
+                  </section>`;
+            } else if (loading) {
+                stage = `
+                  <section class="mm-state-panel" aria-labelledby="mm-state-heading">
+                    <span class="mm-spinner" aria-hidden="true"></span>
+                    <h1 id="mm-state-heading">Checking for Ollama…</h1>
+                    <p>We’re confirming that Ollama is installed and running.</p>
+                  </section>`;
+            } else if (!connected) {
+                stage = `
+                  <section class="mm-ollama-stage" aria-labelledby="mm-ollama-heading">
+                    <img class="mm-ollama-mark" src="/static/assets/setup/ollama-llama.png" alt="Friendly llama indicating Ollama setup">
+                    <div class="mm-ollama-copy">
+                      <p class="mm-kicker">Step 1 of 3 · Ollama</p>
+                      <h1 id="mm-ollama-heading">${ollamaInstalled ? 'Open Ollama' : 'Install Ollama'}</h1>
+                      <p>${ollamaInstalled ? 'Ollama is installed but is not running. Open it, leave it running, then check again.' : 'Ollama is required to run local AI models. Download the Windows installer, finish setup, then check again.'}</p>
+                      <div class="mm-ollama-actions">
+                        ${ollamaInstalled ? '<button class="mm-open" type="button">Open Ollama</button>' : '<button class="mm-download-ollama" type="button">Download Ollama</button>'}
+                        <button class="mm-check" type="button">Check again</button>
+                      </div>
+                      ${statusMessage ? `<div class="mm-inline-status" data-kind="${escapeHTML(statusKind)}" role="status" aria-live="polite">${escapeHTML(statusMessage)}</div>` : ''}
+                    </div>
+                  </section>`;
+            } else if (downloadInterrupted) {
+                stage = `
+                  <section class="mm-state-panel mm-error-stage" aria-labelledby="mm-state-heading">
+                    <span class="mm-state-symbol" aria-hidden="true">!</span>
+                    <h1 id="mm-state-heading">Download paused</h1>
+                    <p>${escapeHTML(statusMessage)}</p>
+                    ${pullPercent > 0 ? `<strong>${escapeHTML(downloadedCopy())} downloaded</strong>` : ''}
+                    <div class="mm-state-actions"><button class="mm-retry-download" type="button">Retry</button><button class="mm-choose-another" type="button">Choose another coach</button></div>
+                    <small>Your progress will be preserved.</small>
+                  </section>`;
+            } else if (showReady) {
+                stage = `
+                  <section class="mm-state-panel mm-success-stage" aria-labelledby="mm-state-heading">
+                    <span class="mm-state-symbol" aria-hidden="true">${ti('check')}</span>
+                    <h1 id="mm-state-heading">Your coach is ready</h1>
+                    <p>${escapeHTML(choice.name)} is installed and ready to use.</p>
+                    <div class="mm-state-actions"><button class="mm-continue" type="button">Continue to practice</button><button class="mm-choose-another" type="button">Choose a different coach</button></div>
+                  </section>`;
+            } else {
+                stage = modelPicker;
+            }
+            mainContent.innerHTML = `
+                <div class="mm-wrap" aria-busy="${loading || pulling}">
+                  <div class="mm-shell">
+                    <section class="mm-window">
+                      <header class="mm-top">
+                        ${enteredForFirstRun
+                            ? '<div class="mm-brand mm-brand--static" aria-label="Interview Chameleon"><img src="/static/assets/brand/interview-chameleon-mark.png" alt=""><span>Interview Chameleon</span></div>'
+                            : '<button class="mm-brand" type="button" aria-label="Interview Chameleon home"><img src="/static/assets/brand/interview-chameleon-mark.png" alt=""><span>Interview Chameleon</span></button>'}
+                        <div class="mm-top-actions"><span class="mm-motto">Private. Focused. A brighter you.</span><button class="mm-back" type="button" style="display:${enteredForFirstRun ? 'none' : 'inline-flex'}">${ti('arrow-left')} ${returnToSetup ? 'Back to setup' : 'Back'}</button></div>
+                      </header>
+                      ${stepper}
+                      <main class="mm-main">${stage}</main>
+                    </section>
+                  </div>
+                </div>`;
 
-        // Init stars background
-        initStarsBg('ach-stars');
+            const modelCards = [...mainContent.querySelectorAll('.mm-card')];
+            const chooseCard = card => {
+                if (!card) return;
+                if (chosenModel !== card.dataset.modelId) {
+                    downloadInterrupted = false;
+                    interruptedModelId = '';
+                    pullPercent = 0;
+                    pullCompleted = 0;
+                    pullTotal = 0;
+                }
+                chosenModel = card.dataset.modelId;
+                draw(`model:${chosenModel}`);
+            };
+            modelCards.forEach((card, index) => {
+                card.addEventListener('click', () => {
+                    chooseCard(card);
+                });
+                card.addEventListener('keydown', event => {
+                    const lastIndex = modelCards.length - 1;
+                    let nextIndex = null;
+                    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % modelCards.length;
+                    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + modelCards.length) % modelCards.length;
+                    if (event.key === 'Home') nextIndex = 0;
+                    if (event.key === 'End') nextIndex = lastIndex;
+                    if (nextIndex === null) return;
+                    event.preventDefault();
+                    chooseCard(modelCards[nextIndex]);
+                });
+            });
+            mainContent.querySelector('.mm-check')?.addEventListener('click', refresh);
+            mainContent.querySelector('.mm-open')?.addEventListener('click', openOllama);
+            mainContent.querySelector('.mm-download-ollama')?.addEventListener('click', downloadOllama);
+            mainContent.querySelector('.mm-action')?.addEventListener('click', activateChoice);
+            mainContent.querySelector('.mm-return-setup')?.addEventListener('click', returnFromModelManager);
+            mainContent.querySelector('.mm-retry-download')?.addEventListener('click', activateChoice);
+            mainContent.querySelector('.mm-cancel')?.addEventListener('click', () => downloadController?.abort());
+            mainContent.querySelector('.mm-choose-another')?.addEventListener('click', () => {
+                downloadInterrupted = false;
+                showCoachPicker = true;
+                statusMessage = '';
+                draw();
+            });
+            mainContent.querySelector('.mm-continue')?.addEventListener('click', () => {
+                if (returnToSetup) {
+                    returnFromModelManager();
+                } else {
+                    returnToHome();
+                }
+            });
+            mainContent.querySelector('.mm-back')?.addEventListener('click', returnFromModelManager);
+            mainContent.querySelector('button.mm-brand')?.addEventListener('click', returnFromModelManager);
+            if (focusKey) {
+                window.requestAnimationFrame(() => mainContent.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true }));
+            }
+        }
 
-        // Animate XP ring + bar after render
-        setTimeout(() => {
-            const circ = 2 * Math.PI * 52;
-            const ring = document.getElementById('ach-ring-fill');
-            if (ring) ring.style.strokeDashoffset = circ * (1 - xpPct / 100);
-            const fill = document.getElementById('ach-xp-fill');
-            if (fill) fill.style.width = xpPct + '%';
-        }, 200);
+        function openOllama() {
+            statusKind = 'checking';
+            statusMessage = 'Opening Ollama… Leave it running, then choose Check again.';
+            draw();
+            if (window.chrome?.webview?.postMessage) {
+                window.chrome.webview.postMessage({ type: 'open-ollama' });
+                window.setTimeout(refresh, 1800);
+                return;
+            }
+            statusKind = 'error';
+            statusMessage = 'Open Ollama from the Windows Start menu, leave it running, then choose Check again.';
+            draw();
+        }
+
+        function downloadOllama() {
+            const downloadUrl = 'https://ollama.com/download/windows';
+            statusKind = 'checking';
+            statusMessage = 'The official Ollama download page is opening. Install Ollama, then return here and choose Check again.';
+            draw();
+            if (window.chrome?.webview?.postMessage) {
+                window.chrome.webview.postMessage({ type: 'download-ollama' });
+                return;
+            }
+            window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+        }
+
+        async function refresh() {
+            loading = true;
+            if (!pulling) statusMessage = '';
+            draw();
+            try {
+                const response = await fetch('/api/models');
+                if (!response.ok) throw new Error(await apiError(response, 'The model list could not be loaded.'));
+                const data = await response.json();
+                modelStatus = data;
+                state.modelCatalog = Array.isArray(data.catalog) ? data.catalog : state.modelCatalog;
+                state.selectedModel = data.selected_model || state.selectedModel;
+                state.modelSetupCompleted = Boolean(data.model_setup_completed);
+                if (!modelStatus.catalog.some(model => model.id === chosenModel)) chosenModel = state.selectedModel;
+                statusKind = data.ollama_connected ? 'ready' : 'error';
+                statusMessage = '';
+            } catch (error) {
+                statusKind = 'error';
+                statusMessage = error.message || 'The local AI setup could not be checked.';
+            } finally {
+                loading = false;
+                draw();
+            }
+        }
+
+        async function selectModel(modelId) {
+            const response = await fetch('/api/models/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelId }),
+            });
+            if (!response.ok) throw new Error(await apiError(response, 'This model could not be selected.'));
+            state.selectedModel = modelId;
+            state.modelSetupCompleted = true;
+        }
+
+        async function downloadModel(model) {
+            downloadController = new AbortController();
+            const response = await fetch('/api/setup/pull', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: model.id }),
+                signal: downloadController.signal,
+            });
+            if (!response.ok) throw new Error(await apiError(response, 'The download could not be started.'));
+            if (!response.body) throw new Error('The download progress could not be read.');
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let streamError = '';
+            const parseEvent = raw => {
+                const line = raw.split('\n').find(item => item.startsWith('data:'));
+                if (!line) return;
+                try {
+                    const payload = JSON.parse(line.slice(5).trim());
+                    if (typeof payload.percent === 'number') pullPercent = Math.max(0, Math.min(100, payload.percent));
+                    if (typeof payload.completed === 'number') pullCompleted = Math.max(0, payload.completed);
+                    if (typeof payload.total === 'number') pullTotal = Math.max(0, payload.total);
+                    if (String(payload.status || '').toLowerCase().startsWith('error')) streamError = payload.status;
+                    statusMessage = payload.status === 'complete'
+                        ? 'Download complete. Preparing your model…'
+                        : pullTotal
+                            ? `${formatBytes(pullCompleted)} of ${formatBytes(pullTotal)} downloaded.`
+                            : String(payload.status || 'Downloading model files…');
+                    scheduleDownloadProgressUpdate();
+                } catch (_) { /* Ignore incomplete progress messages. */ }
+            };
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const events = buffer.split('\n\n');
+                buffer = events.pop() || '';
+                events.forEach(parseEvent);
+            }
+            if (buffer.trim()) parseEvent(buffer);
+            if (streamError) throw new Error(streamError.replace(/^error:\s*/i, ''));
+        }
+
+        async function activateChoice() {
+            if (pulling || loading || !modelStatus.ollama_connected) return;
+            const model = chosen();
+            pulling = true;
+            if (!(downloadInterrupted && interruptedModelId === model.id)) {
+                pullPercent = 0;
+                pullCompleted = 0;
+                pullTotal = 0;
+            }
+            downloadInterrupted = false;
+            interruptedModelId = model.id;
+            statusKind = 'checking';
+            statusMessage = model.installed ? 'Selecting this model…' : 'Starting the download…';
+            draw();
+            try {
+                if (!model.installed) await downloadModel(model);
+                await selectModel(model.id);
+                await refresh();
+                showCoachPicker = false;
+                statusKind = 'ready';
+                statusMessage = `${model.name} is installed and ready.`;
+            } catch (error) {
+                downloadInterrupted = !model.installed;
+                interruptedModelId = model.id;
+                statusKind = 'error';
+                statusMessage = error?.name === 'AbortError'
+                    ? 'Download paused. Ollama kept the completed files, so Retry will continue rather than start over.'
+                    : error.message || 'The download was interrupted. Check your connection, then retry.';
+            } finally {
+                pulling = false;
+                downloadController = null;
+                draw();
+            }
+        }
+
+        draw();
+        refresh();
     }
 
     const routes = {
         'hero': renderHero,
+        'models': renderModelManager,
         'setup': renderSetup,
         'session': renderSession,
         'report': renderReport,
         'history': renderHistory,
+        'calibration': renderCalibration,
         'questions': renderQuestions,
         'achievements': renderAchievements,
         'portfolio': renderPortfolio,
         'games': renderGames
     };
 
-    function navigate(route) {
+    async function navigate(route, options = {}) {
+        await durableStorage.ready;
         // Clean up session resources when leaving the interview page
         if (route !== 'session') {
+            if (state.currentSessionId && state.sessionStatus === 'in_progress') {
+                persistSessionCheckpoint('in_progress', {}, { keepalive: true })
+                    .catch(error => console.error('Session exit checkpoint failed:', error));
+            }
             // Stop body language analysis
             if (window.BodyLanguageAnalyzer && window.BodyLanguageAnalyzer.isActive()) {
                 window.BodyLanguageAnalyzer.stop();
@@ -1371,26 +1901,463 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (routes[route]) {
             mainContent.innerHTML = '';
-            routes[route]();
+            await routes[route](options);
+            window.AppAccessibility?.afterRender(route);
+        }
+    }
+
+    async function startEvaluationJob(sessionId, inputs = {}, onProgress = null) {
+        const create = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/evaluation-jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(inputs),
+        });
+        const created = await create.json();
+        if (!create.ok) throw new Error(created.error?.message || created.detail || 'Evaluation could not be queued');
+        const jobId = created.job?.id;
+        if (!jobId) throw new Error('Evaluation job identifier is missing');
+        for (;;) {
+            await new Promise(resolve => setTimeout(resolve, 900));
+            const response = await fetch(`/api/evaluation-jobs/${encodeURIComponent(jobId)}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || data.detail || 'Evaluation status is unavailable');
+            const job = data.job || {};
+            onProgress?.(job);
+            if (job.status === 'completed') return job.result || {};
+            if (job.status === 'failed') throw new Error(job.error?.message || 'The local evaluation did not complete');
+        }
+    }
+
+    async function retrySavedSessionEvaluation(sessionOrId) {
+        const sessionId = typeof sessionOrId === 'string' ? sessionOrId : sessionOrId?.id;
+        if (!sessionId) return;
+        const data = await startEvaluationJob(sessionId, {});
+        hydrateSessionRecord(data.session);
+        state.lastSessionFeedback = data.feedback || data.session?.feedback || null;
+        state.sessionStatus = data.status || data.session?.status;
+        state.sessionHistoryCache = null;
+        if (state.sessionStatus === 'completed') localStorage.removeItem(ACTIVE_SESSION_KEY);
+        navigate('report');
+    }
+
+    function resumeSavedSession(session) {
+        if (!hydrateSessionRecord(session)) return;
+        state.pendingSessionResume = session;
+        navigate('session');
+    }
+
+    window.resumeSavedSession = resumeSavedSession;
+    window.retrySavedSessionEvaluation = async (sessionOrId) => {
+        try {
+            await retrySavedSessionEvaluation(sessionOrId);
+        } catch (error) {
+            console.error('Evaluation retry failed:', error);
+            alert('The saved evaluation could not be completed. Check the local AI runtime and try again.');
+        }
+    };
+    window.openHistorySession = (session) => {
+        if (!session) return;
+        if (session.status === 'in_progress') {
+            resumeSavedSession(session);
+            return;
+        }
+        if (session.status === 'evaluating' || session.status === 'evaluation_failed') {
+            window.retrySavedSessionEvaluation(session);
+            return;
+        }
+        window.renderSessionReview(session);
+    };
+
+    window.startFocusedRehearsal = async (sessionId, button = null) => {
+        if (!sessionId) return;
+        const originalLabel = button?.innerHTML;
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = `${ti('loader-2')} Building focused rehearsal…`;
+        }
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/practice-focus`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Focused rehearsal could not be created');
+            const launch = data.launch_config || {};
+            const supportedCharacters = ['strict', 'friendly', 'stress', 'calm', 'executive', 'peer'];
+            const character = supportedCharacters.includes(launch.interviewer_style)
+                ? launch.interviewer_style
+                : 'friendly';
+
+            state.targetRole = launch.target_role || state.targetRole || 'General Candidate';
+            state.selectedModule = launch.module || state.selectedModule || 'general';
+            state.difficulty = launch.difficulty || 'medium';
+            state.duration = launch.duration || 'standard';
+            state.industry = launch.industry || 'general';
+            state.interviewerPersona = launch.interviewer_persona || { character, gender: 'female' };
+            state.faangMode = Boolean(launch.faang_mode);
+            state.interruptionsEnabled = Boolean(launch.interruptions_enabled);
+            state.cameraEnabled = launch.camera_enabled !== false;
+            state.blindMirror = launch.blind_mirror !== false;
+            state.voiceMode = launch.voice_mode !== false;
+            state.jobDescription = launch.job_description || '';
+            state.resumeText = launch.resume_text || '';
+            state.resumeFileName = launch.resume_file_name || '';
+            state.resumeFileMeta = launch.resume_file_meta || '';
+            state.practiceFocus = data.focus_context || null;
+            state.interviewPlan = data.plan || null;
+            state.roleIntelligence = data.plan?.role_grounding || null;
+            state.pendingSessionResume = null;
+            navigate('session');
+        } catch (error) {
+            console.error('Focused rehearsal launch failed:', error);
+            alert(error.message || 'Focused rehearsal could not be created.');
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = originalLabel;
+            }
+        }
+    };
+
+    async function loadFocusProgress(session) {
+        const focus = session?.settings?.focus_context || session?.interview_plan?.adaptive_focus;
+        if (!session?.id || !focus?.source_session_id || !Number.isFinite(session?.feedback?.overall_score)) {
+            return null;
+        }
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/focus-progress`);
+            if (response.status === 404 || response.status === 409) return null;
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Focused progress is unavailable');
+            return data.progress || null;
+        } catch (error) {
+            console.warn('Focused-practice progress unavailable:', error);
+            return null;
+        }
+    }
+
+    function focusProgressMarkup(progress) {
+        if (!progress) return '';
+        const outcomeMeta = {
+            improved: { label: 'Improved', tone: 'positive' },
+            partially_improved: { label: 'Partially improved', tone: 'mixed' },
+            steady: { label: 'Held steady', tone: 'steady' },
+            regressed: { label: 'Needs another pass', tone: 'negative' },
+            insufficient_evidence: { label: 'More evidence needed', tone: 'neutral' },
+        }[progress.outcome] || { label: 'Progress review', tone: 'neutral' };
+        const averageDelta = Number.isFinite(progress.average_target_delta)
+            ? `${progress.average_target_delta > 0 ? '+' : ''}${progress.average_target_delta}`
+            : '—';
+        const overallDelta = Number.isFinite(progress.overall_delta)
+            ? `${progress.overall_delta > 0 ? '+' : ''}${progress.overall_delta}`
+            : '—';
+        const rows = Array.isArray(progress.comparisons) ? progress.comparisons : [];
+        return `
+            <section class="practice-progress-card practice-progress-card--${outcomeMeta.tone}">
+                <div class="practice-progress-card__head">
+                    <div>
+                        <div class="practice-progress-card__kicker">Focused practice result</div>
+                        <div class="practice-progress-card__title">Did the rehearsal move the needle?</div>
+                    </div>
+                    <span class="practice-progress-card__status">${outcomeMeta.label}</span>
+                </div>
+                <div class="practice-progress-card__summary">
+                    <div><strong>${averageDelta}</strong><span>Average target change</span></div>
+                    <div><strong>${overallDelta}</strong><span>Overall score change</span></div>
+                </div>
+                <div class="practice-progress-card__rows">
+                    ${rows.map(item => {
+                        const delta = Number.isFinite(item.delta)
+                            ? `${item.delta > 0 ? '+' : ''}${item.delta}`
+                            : '—';
+                        const scorePath = item.comparable
+                            ? `${item.source_score} → ${item.current_score}`
+                            : 'Not enough matching evidence';
+                        return `<div class="practice-progress-row practice-progress-row--${item.status || 'unavailable'}">
+                            <div><strong>${escapeHTML(item.label || item.key || 'Competency')}</strong><span>${escapeHTML(scorePath)}</span></div>
+                            <b>${delta}</b>
+                        </div>`;
+                    }).join('')}
+                </div>
+                <p class="practice-progress-card__recommendation">${escapeHTML(progress.recommendation || '')}</p>
+                <div class="practice-progress-card__threshold">Changes of ${Number(progress.meaningful_delta) || 5}+ points count as meaningful.</div>
+            </section>`;
+    }
+
+    const EVALUATION_REVIEW_OPTIONS = [
+        { value: 'accurate', label: 'Accurate' },
+        { value: 'too_harsh', label: 'Too harsh' },
+        { value: 'too_generous', label: 'Too generous' },
+        { value: 'wrong_evidence', label: 'Wrong evidence' },
+    ];
+
+    async function loadEvaluationReviews(session) {
+        if (!session?.id) return new Map();
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/evaluation-reviews`);
+            if (response.status === 404) return new Map();
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Calibration feedback is unavailable');
+            return new Map((data.reviews || []).map(item => [Number(item.question_index), item]));
+        } catch (error) {
+            console.warn('Evaluation calibration feedback unavailable:', error);
+            return new Map();
+        }
+    }
+
+    function evaluationReviewControlsMarkup(sessionId, questionIndex, review = null) {
+        if (!sessionId) return '';
+        return `
+            <div class="evaluation-review" data-session-id="${escapeHTML(String(sessionId))}" data-question-index="${questionIndex}">
+                <div class="evaluation-review__head">
+                    <span>Was this evaluation fair?</span>
+                    <span class="evaluation-review__status" aria-live="polite">${review ? 'Saved locally' : ''}</span>
+                </div>
+                <div class="evaluation-review__options" role="group" aria-label="Rate this question evaluation">
+                    ${EVALUATION_REVIEW_OPTIONS.map(option => {
+                        const selected = review?.verdict === option.value;
+                        return `<button type="button" class="evaluation-review__option${selected ? ' is-selected' : ''}"
+                            data-verdict="${escapeHTML(option.value)}" aria-pressed="${selected}"
+                            onclick="window.saveEvaluationReviewFromControl(this)">${escapeHTML(option.label)}</button>`;
+                    }).join('')}
+                </div>
+            </div>`;
+    }
+
+    function evaluationProvenanceMarkup(questionEvaluation) {
+        const qe = questionEvaluation || {};
+        if (!qe.rubric_band && !qe.correctness && !qe.limiting_rule && !qe.verifier) return '';
+        const label = (value) => String(value || '').replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+        const verifier = qe.verifier || {};
+        const confidence = qe.confidence || {};
+        const missing = qe.missing_dimensions || [];
+        const uncertainty = qe.uncertainty || [];
+        const verifierTone = verifier.status === 'agreed'
+            ? 'is-good'
+            : ['overrode', 'overrode_conservatively', 'disputed', 'unavailable'].includes(verifier.status)
+                ? 'is-caution'
+                : '';
+        return `
+            <section class="evaluation-provenance" aria-label="Evaluation provenance">
+                <div class="evaluation-provenance__badges">
+                    ${qe.rubric_band ? `<span>${escapeHTML(label(qe.rubric_band))} band</span>` : ''}
+                    ${qe.correctness ? `<span>Correctness: ${escapeHTML(label(qe.correctness))}</span>` : ''}
+                    ${confidence.level ? `<span>Confidence: ${escapeHTML(label(confidence.level))}${Number.isFinite(confidence.score) ? ` · ${confidence.score}` : ''}</span>` : ''}
+                    ${verifier.status && verifier.status !== 'not_requested' ? `<span class="${verifierTone}">Verifier: ${escapeHTML(label(verifier.status))}</span>` : ''}
+                </div>
+                ${qe.correctness_reason ? `<p><strong>Correctness basis</strong>${escapeHTML(qe.correctness_reason)}</p>` : ''}
+                ${missing.length ? `<p><strong>Missing dimensions</strong>${missing.map(item => escapeHTML(label(item))).join(', ')}</p>` : ''}
+                ${qe.limiting_rule ? `<p><strong>Limiting rule</strong>${escapeHTML(qe.limiting_rule)}</p>` : ''}
+                ${verifier.reason ? `<p><strong>Verifier note</strong>${escapeHTML(verifier.reason)}</p>` : ''}
+                ${uncertainty.length ? `<p class="evaluation-provenance__uncertainty"><strong>Uncertainty</strong>${uncertainty.map(escapeHTML).join(' ')}</p>` : ''}
+            </section>`;
+    }
+
+    window.saveEvaluationReview = async (sessionId, questionIndex, verdict, button) => {
+        const review = button?.closest('.evaluation-review');
+        const buttons = review ? [...review.querySelectorAll('.evaluation-review__option')] : [];
+        const status = review?.querySelector('.evaluation-review__status');
+        buttons.forEach(item => { item.disabled = true; });
+        if (status) status.textContent = 'Saving…';
+        try {
+            const response = await fetch(
+                `/api/sessions/${encodeURIComponent(sessionId)}/evaluation-reviews/${questionIndex}`,
+                {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ verdict }),
+                },
+            );
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Feedback could not be saved');
+            buttons.forEach(item => {
+                const selected = item.dataset.verdict === data.review.verdict;
+                item.classList.toggle('is-selected', selected);
+                item.setAttribute('aria-pressed', String(selected));
+            });
+            if (status) status.textContent = 'Saved locally';
+        } catch (error) {
+            console.error('Evaluation calibration save failed:', error);
+            if (status) status.textContent = 'Could not save';
+        } finally {
+            buttons.forEach(item => { item.disabled = false; });
+        }
+    };
+
+    window.saveEvaluationReviewFromControl = (button) => {
+        const review = button?.closest('.evaluation-review');
+        const questionIndex = Number(review?.dataset.questionIndex);
+        if (!review?.dataset.sessionId || !Number.isInteger(questionIndex) || !button?.dataset.verdict) return;
+        return window.saveEvaluationReview(review.dataset.sessionId, questionIndex, button.dataset.verdict, button);
+    };
+
+    function showSessionRecoveryPrompt(session) {
+        const previousPrompt = document.getElementById('session-recovery-prompt');
+        if (previousPrompt) {
+            window.AppAccessibility?.closeDialog(previousPrompt, { restoreFocus: false });
+            if (previousPrompt.isConnected) previousPrompt.remove();
+        }
+        const needsEvaluation = session.status === 'evaluating' || session.status === 'evaluation_failed';
+        const responseCount = (session.messages || []).filter(message => message.role === 'user' && !message.isHidden).length;
+        const overlay = document.createElement('div');
+        overlay.id = 'session-recovery-prompt';
+        overlay.dataset.dialogOverlay = '';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:24px;background:rgba(12,11,9,.62);backdrop-filter:blur(8px)';
+        overlay.innerHTML = `<section data-dialog aria-labelledby="session-recovery-title" aria-describedby="session-recovery-details" style="width:min(460px,100%);padding:30px;background:#f2eadc;color:#171512;border:1px solid rgba(71,62,49,.28);box-shadow:0 24px 80px rgba(0,0,0,.35);font-family:Georgia,serif">
+            <div style="font:700 11px/1.2 'Inter',sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#a53d27;margin-bottom:14px">Recovered local session</div>
+            <h2 id="session-recovery-title" style="font-size:30px;line-height:1.05;margin:0 0 12px">${needsEvaluation ? 'Your report is waiting.' : 'Continue where you left off.'}</h2>
+            <p id="session-recovery-details" style="font-size:15px;line-height:1.6;color:#574e40;margin:0 0 6px">${escapeHTML(session.target_role || 'Interview rehearsal')} · ${escapeHTML(session.module || 'general')}</p>
+            <p style="font:500 12px/1.5 'Inter',sans-serif;color:#786d5c;margin:0 0 24px">${responseCount} saved response${responseCount === 1 ? '' : 's'} · ${Math.max(1, Math.round((session.duration_seconds || 0) / 60))} min recorded</p>
+            ${session.evaluation_error ? `<p style="font:500 12px/1.5 'Inter',sans-serif;padding:10px 12px;background:rgba(165,61,39,.08);color:#7e2f20;margin:0 0 20px">The previous evaluation stopped before a valid report was saved.</p>` : ''}
+            <div style="display:flex;justify-content:flex-end;gap:10px">
+                <button type="button" data-recovery-later style="padding:11px 16px;border:1px solid rgba(71,62,49,.25);background:transparent;color:#473e31;font:700 12px 'Inter',sans-serif;cursor:pointer">Later</button>
+                <button type="button" data-recovery-action style="padding:11px 18px;border:0;background:#a53d27;color:#fff;font:700 12px 'Inter',sans-serif;cursor:pointer">${needsEvaluation ? 'Retry report' : 'Resume rehearsal'}</button>
+            </div>
+        </section>`;
+        const closePrompt = (restoreFocus = true) => {
+            if (window.AppAccessibility?.closeDialog) {
+                window.AppAccessibility.closeDialog(overlay, { restoreFocus });
+            } else {
+                overlay.remove();
+            }
+        };
+        overlay.querySelector('[data-recovery-later]').onclick = () => closePrompt();
+        overlay.querySelector('[data-recovery-action]').onclick = async event => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            button.textContent = needsEvaluation ? 'Evaluating…' : 'Opening…';
+            if (!needsEvaluation) {
+                closePrompt(false);
+                resumeSavedSession(session);
+                return;
+            }
+            try {
+                await retrySavedSessionEvaluation(session);
+                closePrompt(false);
+            } catch (error) {
+                console.error(error);
+                button.disabled = false;
+                button.textContent = 'Retry report';
+            }
+        };
+        if (window.AppAccessibility?.openDialog) {
+            window.AppAccessibility.openDialog(overlay, {
+                initialFocus: '[data-recovery-later]',
+                closeOnBackdrop: true,
+                closeOnEscape: true,
+            });
+        } else {
+            document.body.appendChild(overlay);
+            overlay.querySelector('[data-recovery-later]')?.focus();
+        }
+    }
+
+    async function checkForRecoverableSession() {
+        try {
+            const activeId = localStorage.getItem(ACTIVE_SESSION_KEY);
+            let session = null;
+            if (activeId) {
+                const activeResponse = await fetch(`/api/sessions/${encodeURIComponent(activeId)}`);
+                if (activeResponse.ok) session = (await activeResponse.json()).session;
+            }
+            if (!session || !['in_progress', 'evaluating', 'evaluation_failed'].includes(session.status)) {
+                const response = await fetch('/api/sessions/recoverable');
+                if (response.ok) session = (await response.json()).session;
+            }
+            if (session && ['in_progress', 'evaluating', 'evaluation_failed'].includes(session.status)) {
+                showSessionRecoveryPrompt(session);
+            } else {
+                localStorage.removeItem(ACTIVE_SESSION_KEY);
+            }
+        } catch (error) {
+            console.error('Session recovery check failed:', error);
+        }
+    }
+
+    function setHeroRuntimeBadge(label, state, accessibleLabel) {
+        const badge = document.querySelector('.nav-right');
+        if (!badge) return;
+        badge.dataset.runtimeLabel = label;
+        badge.dataset.runtimeState = state;
+        badge.setAttribute('aria-label', accessibleLabel || label.replace(' · ', ': '));
+    }
+
+    async function refreshHeroRuntimeBadge() {
+        setHeroRuntimeBadge('LOCAL AI · CHECKING', 'checking', 'Local AI status: checking');
+        try {
+            const response = await fetch('/api/system/status');
+            if (!response.ok) throw new Error(`Status request failed (${response.status})`);
+            const runtime = await response.json();
+            if (runtime.ready_for_ai_rehearsal) {
+                setHeroRuntimeBadge('LOCAL AI · READY', 'ready', 'Local AI status: ready');
+            } else {
+                setHeroRuntimeBadge('LOCAL AI · SETUP NEEDED', 'attention', 'Local AI status: setup needed');
+            }
+        } catch (error) {
+            setHeroRuntimeBadge('LOCAL AI · UNAVAILABLE', 'unavailable', 'Local AI status: unavailable');
+        }
+    }
+
+    function heroSessionStripMarkup(session) {
+        if (!session) {
+            return `
+                <span class="hero-last-label">First rehearsal</span>
+                <strong>No sessions yet</strong>
+                <span class="hero-last-score">— <small>score</small></span>
+                <button onclick="window.nav('setup')">
+                    <em>Build your first rehearsal</em>
+                    <strong>Begin</strong>
+                    <span class="hero-continue-arrow" aria-hidden="true">${ti('arrow-right')}</span>
+                </button>
+            `;
+        }
+
+        const score = Number(session.feedback?.overall_score);
+        const hasScore = Number.isFinite(score);
+        const recoverable = isRecoverableSession(session);
+        return `
+            <span class="hero-last-label">${recoverable ? 'Saved rehearsal' : 'Last rehearsal'}</span>
+            <strong>${escapeHTML(session.target_role || 'General Role')}</strong>
+            <span class="hero-last-score">${hasScore ? clampScore(score) : '—'} <small>score</small></span>
+            <button onclick="window.nav('history')">
+                <em>${recoverable ? 'Continue where you left off' : 'Open your latest report'}</em>
+                <strong>${recoverable ? 'Continue' : 'Review'}</strong>
+                <span class="hero-continue-arrow" aria-hidden="true">${ti('arrow-right')}</span>
+            </button>
+        `;
+    }
+
+    async function refreshHeroSessionStrip() {
+        const strip = document.getElementById('hero-last-strip');
+        if (!strip) return;
+        try {
+            if (!Array.isArray(state.sessionHistoryCache)) {
+                const response = await fetch('/api/sessions');
+                if (!response.ok) throw new Error(`Session request failed (${response.status})`);
+                const data = await response.json();
+                state.sessionHistoryCache = Array.isArray(data.sessions) ? data.sessions : [];
+            }
+            if (!strip.isConnected) return;
+            const latest = state.sessionHistoryCache.find(session => isCompletedSession(session) || isRecoverableSession(session)) || null;
+            strip.innerHTML = heroSessionStripMarkup(latest);
+        } catch (error) {
+            if (strip.isConnected) strip.innerHTML = heroSessionStripMarkup(null);
         }
     }
 
     // --- Hero Section (Redesigned v3 - Final Concept) ---
     function renderHero() {
         const heroModules = [
-            { id: 'general', icon: 'layers-intersect', title: 'General Interview', desc: 'Standard HR and common interview questions with structured feedback.', color: '99,102,241', tags: ['Behavioral', 'STAR Method', 'Culture Fit'] },
-            { id: 'roleplay', icon: 'messages', title: 'Roleplay & Behavioral', desc: 'Practice behavioral questions and situational roleplaying scenarios.', color: '168,85,247', tags: ['Conflict Resolution', 'De-escalation', 'Negotiation'] },
-            { id: 'technical', icon: 'code', title: 'Technical Assessment', desc: 'Role-specific technical questions and core engineering skills.', color: '59,130,246', tags: ['System Design', 'Algorithms', 'Code Review'] },
-            { id: 'visual', icon: 'presentation', title: 'Visual & Whiteboard', desc: 'Questions requiring visual explanation or whiteboard drawing.', color: '20,184,166', tags: ['UI/UX Design', 'Architecture', 'Wireframing'] },
-            { id: 'casestudy', icon: 'chart-dots-3', title: 'Case Study & Strategy', desc: 'Problem-solving, case studies, and strategic thinking challenges.', color: '236,72,153', tags: ['Consulting', 'Market Analysis', 'Frameworks'] },
-            { id: 'salary', icon: 'cash', title: 'Salary Negotiation', desc: 'Practice handling compensation discussions and offer negotiations.', color: '34,197,94', tags: ['Counter Offer', 'BATNA', 'Benefits', 'Anchoring'] },
+            { id: 'general', icon: 'layers-intersect', title: 'General', desc: 'Warm up and tell me about yourself.', color: '173,63,40', tags: ['Behavioral', 'STAR Method', 'Culture Fit'] },
+            { id: 'roleplay', icon: 'messages', title: 'Behavioral', desc: 'Practice stories that prove your impact.', color: '173,63,40', tags: ['Conflict Resolution', 'De-escalation', 'Negotiation'] },
+            { id: 'technical', icon: 'code', title: 'Technical', desc: 'Strengthen fundamentals and problem solving.', color: '23,78,62', tags: ['System Design', 'Algorithms', 'Code Review'] },
+            { id: 'visual', icon: 'presentation', title: 'Whiteboard', desc: 'Think out loud. Solve with clarity.', color: '23,58,88', tags: ['UI/UX Design', 'Architecture', 'Wireframing'] },
+            { id: 'casestudy', icon: 'chart-dots-3', title: 'Case Study', desc: 'Analyze, structure, and recommend.', color: '164,109,33', tags: ['Consulting', 'Market Analysis', 'Frameworks'] },
+            { id: 'salary', icon: 'cash', title: 'Salary', desc: 'Negotiate with confidence.', color: '23,78,62', tags: ['Counter Offer', 'BATNA', 'Benefits', 'Anchoring'] },
         ];
         const heroNavItems = [
-            { view: 'questions', icon: 'book-2', label: 'Questions' },
-            { view: 'history', icon: 'history', label: 'History' },
-            { view: 'achievements', icon: 'trophy', label: 'Achievements' },
+            { view: 'history', icon: 'history', label: 'Sessions' },
+            { view: 'questions', icon: 'book-2', label: 'Practice Library' },
+            { view: 'games', icon: 'device-gamepad-2', label: 'Training Floor' },
             { view: 'portfolio', icon: 'briefcase', label: 'Portfolio' },
-            { view: 'games', icon: 'device-gamepad-2', label: 'Minigames' },
+            { view: 'achievements', icon: 'trophy', label: 'Progress' },
+            { view: 'models', icon: 'cpu', label: 'AI Models' },
         ];
         mainContent.innerHTML = `
             <style>
@@ -1403,9 +2370,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 /* -- NAVBAR -- */
                 .hero-nav{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 36px;height:76px;background:transparent;pointer-events:none}
-                .nav-brand{display:flex;align-items:center;gap:11px;cursor:pointer;pointer-events:auto;min-width:140px}
-                .nav-logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,hsl(38,92%,50%),hsl(28,100%,58%));display:flex;align-items:center;justify-content:center;box-shadow:0 2px 16px hsla(38,92%,50%,.35),inset 0 1px 0 rgba(255,255,255,.3);overflow:hidden}
-                .nav-logo .ti{font-size:20px;color:#111}
+                .nav-brand{display:flex;align-items:center;gap:11px;cursor:pointer;pointer-events:auto;min-width:140px;border:0;background:none;padding:0;text-align:left;font:inherit}
+                .nav-logo{width:36px;height:36px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+                .nav-logo img{width:100%;height:100%;object-fit:contain;filter:invert(1) hue-rotate(180deg) saturate(.9) brightness(1.03)}
                 .nav-title{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:800;color:var(--t-heading);letter-spacing:-.03em}
                 .nav-center{pointer-events:auto;display:flex;justify-content:center;position:absolute;left:50%;transform:translateX(-50%)}
                 .menu-nav{padding:6px;background:transparent;border:1px solid transparent;display:flex;justify-content:center;border-radius:15px;box-shadow:none}
@@ -1516,12 +2483,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 html:not(.dark) .module-card{background:rgba(255,255,255,.35)!important;backdrop-filter:blur(20px)!important;-webkit-backdrop-filter:blur(20px)!important;border:1.5px solid rgba(255,255,255,.5)!important;box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 -1px 0 rgba(0,0,0,.04) inset,0 4px 20px rgba(0,0,0,.06)!important}
                 html:not(.dark) .module-card:hover{border-color:rgba(255,255,255,.7)!important;box-shadow:0 1px 0 rgba(255,255,255,.7) inset,0 -1px 0 rgba(0,0,0,.04) inset,0 8px 32px rgba(0,0,0,.1),0 0 28px -8px var(--card-c)!important}
                 html:not(.dark) .card-icon-wrap{background:rgba(255,255,255,.45)!important;border-color:rgba(255,255,255,.5)!important}
-                html:not(.dark) .hero-start-btn{background:linear-gradient(135deg,hsl(38,92%,50%),hsl(28,95%,52%))!important;border:none!important;color:#fff!important;box-shadow:0 4px 20px hsla(38,92%,50%,.35),0 1px 0 rgba(255,255,255,.25) inset!important;padding:15px 44px!important;border-radius:14px!important;position:relative!important;overflow:hidden!important}
-                html:not(.dark) .hero-start-btn::before{content:''!important;position:absolute!important;top:0!important;left:-100%!important;width:60%!important;height:100%!important;background:linear-gradient(90deg,transparent,rgba(255,255,255,.25),transparent)!important;animation:btnShimmer 3s ease-in-out infinite!important}
-                @keyframes btnShimmer{0%,100%{left:-100%}50%{left:150%}}
-                html:not(.dark) .hero-start-btn:hover{background:linear-gradient(135deg,hsl(38,92%,55%),hsl(28,95%,57%))!important;box-shadow:0 6px 28px hsla(38,92%,50%,.5),0 1px 0 rgba(255,255,255,.3) inset!important;transform:translateY(-2px)!important}
-                html:not(.dark) .hero-start-btn:active{transform:translateY(0)!important;box-shadow:0 2px 12px hsla(38,92%,50%,.3)!important}
-                html:not(.dark) .hero-start-btn .hero-start-arrow{color:#fff!important}
+                html:not(.dark) .hero-start-btn{background:linear-gradient(145deg,#b84a30 0%,#a63a25 54%,#8f3021 100%)!important;border:1px solid rgba(102,35,24,.42)!important;color:#fff8ed!important;box-shadow:0 5px 13px rgba(65,28,17,.17),0 1px 0 rgba(255,255,255,.16) inset!important;padding:15px 44px!important;border-radius:12px!important;position:relative!important;overflow:hidden!important}
+                html:not(.dark) .hero-start-btn::before{content:''!important;position:absolute!important;inset:0!important;background:repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 1px,rgba(24,9,5,.018) 1px 3px),linear-gradient(112deg,rgba(255,255,255,.09),transparent 38%,rgba(43,12,7,.035))!important;opacity:.72!important;pointer-events:none!important}
+                html:not(.dark) .hero-start-btn:hover{background:linear-gradient(145deg,#c05236 0%,#ad402a 54%,#963526 100%)!important;box-shadow:0 7px 16px rgba(65,28,17,.22),0 1px 0 rgba(255,255,255,.18) inset!important;transform:translateY(-1px)!important}
+                html:not(.dark) .hero-start-btn:active{transform:translateY(0)!important;box-shadow:0 3px 8px rgba(65,28,17,.18),0 1px 0 rgba(255,255,255,.12) inset!important}
+                html:not(.dark) .hero-start-btn .hero-start-arrow{color:#fff8ed!important}
                 html:not(.dark) .hero-demo-btn{background:rgba(255,255,255,.55)!important;border-color:rgba(255,255,255,.7)!important;box-shadow:0 4px 18px rgba(0,0,0,.07)!important;color:#1f2937!important}
             </style>
 
@@ -1535,21 +2501,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <!-- NAVBAR -->
                 <nav class="hero-nav">
-                    <div class="nav-brand" onclick="window.nav('hero')">
-                        <div class="nav-logo">${ti('sparkles')}</div>
-                        <span class="nav-title">AI Coach</span>
-                    </div>
+                    <button class="nav-brand" type="button" onclick="window.nav('hero')" aria-label="Interview Chameleon home">
+                        <div class="nav-logo"><img src="/static/assets/brand/interview-chameleon-mark.png" alt=""></div>
+                        <span class="nav-title">Interview<br>Chameleon</span>
+                    </button>
                     <div class="nav-center">
                         <div class="menu-nav">
                             ${heroNavItems.map(item => `
-                                <button class="menu-link" onclick="window.nav('${item.view}')">
+                                <button class="menu-link" type="button" onclick="window.nav('${item.view}')">
                                     <span class="link-icon">${ti(item.icon)}</span>
                                     <span class="link-title">${item.label}</span>
                                 </button>
                             `).join('')}
                         </div>
                     </div>
-                    <div class="nav-right">
+                    <div class="nav-right" role="status" aria-live="polite" data-runtime-label="LOCAL AI · CHECKING" data-runtime-state="checking" aria-label="Local AI status: checking">
                         <button class="nav-theme-btn" id="hero-theme-toggle" title="Toggle theme" aria-label="Toggle theme">
                             <span class="sun-icon">${ti('sun')}</span>
                             <span class="moon-icon">${ti('moon')}</span>
@@ -1559,18 +2525,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <!-- HERO CENTER -->
                 <div class="hero-center">
-                    <div class="hero-pill d0">${ti('sparkles')} AI-Powered Interview Preparation</div>
+                    <div class="hero-pill d0">${ti('lock')} Private. Local. Yours.</div>
                     <h1 class="hero-h1 d1">
-                        Master Every Interview,<br>
-                        <em><span class="hero-cycle-word" id="heroCycleEl">Any Industry</span></em>
+                        Walk into your<br>
+                        <em>next interview ready.</em>
+                        <span class="hero-headline-rule" aria-hidden="true"></span>
                     </h1>
                     <p class="hero-desc d2">
-                        The multimodal AI coach that adapts to your role - from behavioral roleplays
-                        to whiteboard challenges and technical assessments.
+                        A private studio to help you rehearse, get feedback,<br>
+                        and show up with confidence.
                     </p>
                     <div class="hero-actions d3">
                         <button class="hero-start-btn" onclick="window.nav('setup')">
-                            Start Practicing <span class="hero-start-arrow">${ti('arrow-right')}</span>
+                            <span class="hero-start-arrow" aria-hidden="true">${ti('arrow-right')}</span>
+                            <span class="hero-start-label">Begin a session</span>
                         </button>
                         <button class="hero-demo-btn" onclick="window.loadDemoReport()">
                             ${ti('chart-bar')} Demo Report
@@ -1587,6 +2555,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
 
                 <div class="hero-divider"></div>
+
+                <div class="hero-last-strip" id="hero-last-strip" aria-live="polite">
+                    <span class="hero-last-label">First rehearsal</span>
+                    <strong>No sessions yet</strong>
+                    <span class="hero-last-score">— <small>score</small></span>
+                    <button onclick="window.nav('setup')">
+                        <em>Build your first rehearsal</em>
+                        <strong>Begin</strong>
+                        <span class="hero-continue-arrow" aria-hidden="true">${ti('arrow-right')}</span>
+                    </button>
+                </div>
 
                 <!-- MODULE CARDS -->
                 <div class="modules-section">
@@ -1610,15 +2589,26 @@ document.addEventListener('DOMContentLoaded', () => {
                         `).join('')}
                     </div>
                 </div>
+                <div class="hero-local-note">
+                    <span class="hero-lock-icon" aria-hidden="true">${ti('lock')}</span>
+                    <span class="hero-privacy">
+                        <strong>Private. Local. Yours.</strong>
+                        <small>All sessions run on your machine. Your data stays with you.</small>
+                    </span>
+                    <span class="hero-bottom-rule" aria-hidden="true"></span>
+                </div>
             </div>
         `;
+
+        refreshHeroRuntimeBadge();
+        refreshHeroSessionStrip();
 
         // -- Theme toggle in navbar --
         const heroThemeBtn = document.getElementById('hero-theme-toggle');
         if (heroThemeBtn) {
             heroThemeBtn.addEventListener('click', () => {
                 const isDark = document.documentElement.classList.toggle('dark');
-                localStorage.setItem('theme', isDark ? 'dark' : 'light');
+                persistLocalValue('theme', isDark ? 'dark' : 'light');
             });
         }
 
@@ -1732,7 +2722,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     gsCtx.restore();
                 }
             }
-            function gsLoop() { gsUpdate(); gsDraw(); requestAnimationFrame(gsLoop); }
+            function gsLoop() {
+                // The opening tunnel has the whole viewport to itself. Avoid doing
+                // the particle system's O(n²) collision work behind that mask.
+                if (!document.documentElement.classList.contains('ic-opening')) {
+                    gsUpdate();
+                    gsDraw();
+                }
+                requestAnimationFrame(gsLoop);
+            }
             gsResize(); gsLoop();
             window.addEventListener('resize', gsResize);
             document.addEventListener('mousemove', e => { const r = gsRoot.getBoundingClientRect(); gsMouseX = e.clientX - r.left; gsMouseY = e.clientY - r.top; });
@@ -1747,33 +2745,48 @@ document.addEventListener('DOMContentLoaded', () => {
     window._getDurLabel = (d) => ({ quick: 'Quick (5 Qs)', standard: 'Standard (10 Qs)', extended: 'Extended (20 Qs)' }[d] || '-');
     window._getIndustryLabel = (id) => { const ind = INDUSTRIES.find(i => i.id === id); return ind ? ind.label : 'General'; };
 
-    function renderSetup() {
-        const SETUP_CHARS = {
-            female: [
-                { icon: 'scale', id: 'strict', name: 'Victoria', role: 'Strict & Professional', desc: 'Formal, high standards, expects precise answers.' },
-                { icon: 'mood-smile', id: 'friendly', name: 'Sophie', role: 'Friendly & Supportive', desc: 'Warm and encouraging. Builds rapport naturally.' },
-                { icon: 'flame', id: 'stress', name: 'Elena', role: 'Stress Interviewer', desc: 'Rapid-fire questions, tests composure under pressure.' },
-                { icon: 'brain', id: 'calm', name: 'Maya', role: 'Calm & Analytical', desc: 'Thoughtful deep follow-ups. Values reasoning.' },
-                { icon: 'tie', id: 'executive', name: 'Diana', role: 'The Executive Panel', desc: 'C-suite lens: vision, strategy, leadership.' },
-                { icon: 'users', id: 'peer', name: 'Jess', role: 'The Peer Interviewer', desc: 'Casual and culture-fit focused.' },
-            ],
-            male: [
-                { icon: 'scale', id: 'strict', name: 'Marcus', role: 'Strict & Professional', desc: 'Formal, high standards, expects precise answers.' },
-                { icon: 'mood-smile', id: 'friendly', name: 'James', role: 'Friendly & Supportive', desc: 'Warm and encouraging. Builds rapport naturally.' },
-                { icon: 'flame', id: 'stress', name: 'Tyler', role: 'Stress Interviewer', desc: 'Rapid-fire questions, tests composure under pressure.' },
-                { icon: 'brain', id: 'calm', name: 'Nathan', role: 'Calm & Analytical', desc: 'Thoughtful deep follow-ups. Values reasoning.' },
-                { icon: 'tie', id: 'executive', name: 'Richard', role: 'The Executive Panel', desc: 'C-suite lens: vision, strategy, leadership.' },
-                { icon: 'users', id: 'peer', name: 'Alex', role: 'The Peer Interviewer', desc: 'Casual and culture-fit focused.' },
-            ]
-        };
+    function renderSetup(options = {}) {
+        const restoredDraft = options.resumeDraft && setupDraft ? setupDraft : null;
+        const SETUP_CHARS = [
+            {
+                id: 'friendly', gender: 'female', name: 'Sophie', role: 'Friendly & Supportive',
+                desc: 'Warm, patient follow-ups that help you find your footing.', pace: 'Calm pace',
+                image: '/static/assets/interviewers/interviewer-female-studio-v2.webp'
+            },
+            {
+                id: 'executive', gender: 'male', name: 'Marcus', role: 'Direct & Analytical',
+                desc: 'Measured questions with a senior leadership point of view.', pace: 'Measured pace',
+                image: '/static/assets/interviewers/interviewer-male.webp'
+            },
+            {
+                id: 'stress', gender: 'female', name: 'Elena', role: 'Demanding & Concise',
+                desc: 'Fast, focused pressure that tests clarity and composure.', pace: 'Fast pace',
+                image: '/static/assets/interviewers/interviewer-female.webp'
+            },
+            {
+                id: 'calm', gender: 'female', name: 'Maya', role: 'Calm & Analytical',
+                desc: 'Patient, layered questions that make space for careful reasoning.', pace: 'Reflective pace',
+                image: '/static/assets/interviewers/interviewer-maya.webp'
+            },
+            {
+                id: 'strict', gender: 'female', name: 'Victoria', role: 'Strict & Formal',
+                desc: 'Structured, exacting questions that challenge vague or incomplete answers.', pace: 'Deliberate pace',
+                image: '/static/assets/interviewers/interviewer-victoria.webp'
+            },
+            {
+                id: 'peer', gender: 'male', name: 'Sam', role: 'Peer & Collaborative',
+                desc: 'Curious, conversational prompts focused on teamwork and working style.', pace: 'Natural pace',
+                image: '/static/assets/interviewers/interviewer-sam.webp'
+            }
+        ];
 
         const SETUP_MODS = [
-            { id: 'general', icon: 'layers-intersect', title: 'General Interview', desc: 'Well-rounded mix of behavioral, situational, and motivational questions.', pills: ['Behavioral', 'STAR Method', 'Culture Fit'] },
-            { id: 'roleplay', icon: 'messages', title: 'Roleplay & Behavioral', desc: 'Practice with AI personas - angry customers, conflicts, demanding clients.', pills: ['Conflict Resolution', 'Negotiation', 'Leadership'] },
-            { id: 'visual', icon: 'presentation', title: 'Visual & Whiteboard', desc: 'Sketch architectures, explain designs, walk through visual problem-solving.', pills: ['System Architecture', 'UI/UX Design', 'Wireframing'] },
-            { id: 'technical', icon: 'code', title: 'Technical Assessment', desc: 'Code reviews, algorithms, system design, and logic puzzles under pressure.', pills: ['System Design', 'Algorithms', 'Code Review'] },
-            { id: 'casestudy', icon: 'chart-dots-3', title: 'Case Study & Strategy', desc: 'Analyze business scenarios, market entry problems, structure your reasoning.', pills: ['Market Sizing', 'Product Strategy', 'Frameworks'] },
-            { id: 'salary', icon: 'cash', title: 'Salary Negotiation', desc: 'Practice negotiating your offer with a realistic hiring manager.', pills: ['Counter Offer', 'BATNA', 'Anchoring'] },
+            { id: 'general', title: 'General', desc: 'Open-ended conversation across a range of topics.', duration: '30–45 min' },
+            { id: 'roleplay', title: 'Behavioral', desc: 'Explore past experiences and how you worked.', duration: '30–45 min' },
+            { id: 'technical', title: 'Technical', desc: 'Test technical knowledge and problem solving.', duration: '45–60 min' },
+            { id: 'visual', title: 'Whiteboard', desc: 'Solve problems visually and explain your thinking.', duration: '45–60 min' },
+            { id: 'casestudy', title: 'Case Study', desc: 'Analyse a business case and make recommendations.', duration: '45–60 min' },
+            { id: 'salary', title: 'Salary', desc: 'Discuss compensation and expectations.', duration: '15–20 min' },
         ];
 
         const SETUP_IND = [
@@ -1785,12 +2798,21 @@ document.addEventListener('DOMContentLoaded', () => {
             { id: 'sales', icon: 'handshake', label: 'Sales' },
         ];
 
-        let setupStep = 1;
-        const LOCAL_MODEL = 'qwen2.5:7b';
-        let setupVoice = state.interviewerPersona.gender || 'female';
-        let setupCharIdx = SETUP_CHARS[setupVoice].findIndex(c => c.id === state.interviewerPersona.character);
-        if (setupCharIdx < 0) setupCharIdx = 1;
-        let stressMode = false;
+        let setupStep = restoredDraft?.step || 1;
+        let LOCAL_MODEL = state.selectedModel || DEFAULT_MODEL_ID;
+        // A fresh briefing starts undecided. A model-manager round trip restores
+        // the exact interviewer and conditions the user already chose.
+        let setupCharIdx = restoredDraft?.charIndex ?? -1;
+        let setupCharOffset = 0;
+        let setupCharTrackIndex = SETUP_CHARS.length + Math.max(0, setupCharIdx);
+        let setupCharAnimating = false;
+        if (!restoredDraft) state.interviewerPersona = null;
+        let stressMode = Boolean(restoredDraft?.stressMode);
+        let setupDifficulty = restoredDraft?.difficulty || '';
+        let setupDuration = restoredDraft?.duration || '';
+        let preStressDifficulty = restoredDraft?.preStressDifficulty || (stressMode ? '' : setupDifficulty);
+        let preStressDuration = restoredDraft?.preStressDuration || (stressMode ? '' : setupDuration);
+        let preStressInterruptions = Boolean(restoredDraft?.preStressInterruptions);
         const setupRuntime = {
             loading: true,
             data: null,
@@ -1799,6 +2821,13 @@ document.addEventListener('DOMContentLoaded', () => {
             pullStatus: '',
             pullPercent: 0,
         };
+        const setupSelectionCircle = className => `
+            <span class="su-selection-circle ${className}" aria-hidden="true">
+                <svg viewBox="0 0 180 88" preserveAspectRatio="none" focusable="false">
+                    <path class="su-selection-circle-path su-selection-circle-path-a" pathLength="1" d="M13 47C10 18 46 5 91 7c45 2 77 17 75 39-2 23-40 34-84 32-43-1-67-13-69-31Z"></path>
+                    <path class="su-selection-circle-path su-selection-circle-path-b" pathLength="1" d="M17 50c1-27 37-39 79-38 46 1 68 18 62 39-6 20-42 27-80 23-38-3-62-13-61-24Z"></path>
+                </svg>
+            </span>`;
 
         mainContent.innerHTML = `
             <style>
@@ -1843,7 +2872,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 .su-hdr h2{font-size:clamp(1.8rem,3vw,2.4rem);font-weight:900;letter-spacing:-.03em;color:var(--t-heading);margin-bottom:8px}
                 .su-hdr p{font-size:15px;color:var(--t-muted);line-height:1.6}
                 .su-field{margin-bottom:28px}
-                .su-field label{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--t-fg);margin-bottom:10px}
+                .su-field label,.su-field-label{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--t-fg);margin-bottom:10px}
                 .su-ico{color:hsl(38,92%,50%);font-size:15px}
                 .su-opt{font-size:11px;font-weight:400;color:var(--t-muted);background:var(--t-surface-hover);border:1px solid var(--t-border);padding:1px 7px;border-radius:4px}
                 .su-inp,.su-ta{width:100%;background:var(--t-surface);border:1px solid rgba(255,255,255,.13);border-radius:10px;padding:12px 16px;font-size:14px;color:var(--t-fg);font-family:inherit;transition:border-color .2s,box-shadow .2s;outline:none;resize:none}
@@ -1852,8 +2881,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 .su-res-tabs{display:flex;gap:4px;margin-bottom:10px}
                 .su-res-tab{padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;border:1px solid var(--t-border);background:transparent;color:var(--t-muted);cursor:pointer;transition:all .2s;font-family:inherit}
                 .su-res-tab.on{background:hsla(38,92%,50%,.1);border-color:hsla(38,92%,50%,.35);color:hsl(38,92%,50%)}
-                .su-dz{border:1.5px dashed rgba(255,255,255,.13);border-radius:12px;padding:32px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:8px}
+                .su-dz{border:1.5px dashed rgba(255,255,255,.13);border-radius:12px;padding:32px;text-align:center;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:8px}
                 .su-dz:hover{border-color:hsla(38,92%,50%,.4);background:hsla(38,92%,50%,.03)}
+                button.su-resume-attach{font:inherit;background:none;border:0;padding:0;text-align:left;cursor:pointer}
                 .su-dz-ico{font-size:28px;margin-bottom:4px}
                 .su-dz-txt{font-size:13px;color:var(--t-muted)}
                 .su-dz-txt span{color:hsl(38,92%,50%);text-decoration:underline}
@@ -1901,11 +2931,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 .su-tr{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-radius:12px;border:1px solid var(--t-border);background:var(--t-surface-dim);margin-bottom:10px}
                 .su-tr-lbl{font-size:14px;font-weight:600;color:var(--t-fg)}
                 .su-tr-sub{font-size:11px;color:var(--t-muted);margin-top:2px}
-                .su-sw{width:44px;height:24px;border-radius:99px;background:var(--t-border2);border:1.5px solid var(--t-border);cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
+                .su-sw{width:48px;height:26px;border-radius:999px;background:var(--t-border2);border:1.5px solid var(--t-border);cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
                 .su-sw.on{background:hsl(38,92%,50%);border-color:hsl(38,92%,50%)}
                 .su-sw.locked-on{background:rgba(240,80,80,.8);border-color:rgba(240,80,80,.8);pointer-events:none}
-                .su-sw-th{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
-                .su-sw.on .su-sw-th,.su-sw.locked-on .su-sw-th{transform:translateX(20px)}
+                .su-sw-th{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+                .su-sw.on .su-sw-th,.su-sw.locked-on .su-sw-th{transform:translateX(22px)}
                 .su-nav{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:40px}
                 .su-btn-back{display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border-radius:10px;border:1.5px solid var(--t-border);background:transparent;color:var(--t-muted);font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;font-family:inherit}
                 .su-btn-back:hover{border-color:rgba(255,255,255,.13);color:var(--t-fg)}
@@ -1945,108 +2975,170 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="su-wrap">
                 <div class="su-orbs"><div class="su-orb su-o1"></div><div class="su-orb su-o2"></div><div class="su-orb su-o3"></div></div>
                 ${starsHTML('su-stars')}
+                <header class="su-topbar">
+                    <button class="su-topbrand" type="button" onclick="window.nav('hero')" aria-label="Return home"><img src="/static/assets/brand/interview-chameleon-mark.png" alt=""><span class="su-topbrand-copy"><span>Interview</span><span>Chameleon</span></span></button>
+                    <div class="su-crumb"><strong>Director's Briefing</strong><i>/</i><span>Prepare your rehearsal</span></div>
+                    <div class="su-guide"><span aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M2.5 4.5h5.2c2.4 0 4.3 1.9 4.3 4.3v11.7c0-2.2-1.8-4-4-4H2.5z"/><path d="M21.5 4.5h-5.2c-2.4 0-4.3 1.9-4.3 4.3v11.7c0-2.2 1.8-4 4-4h5.5z"/></svg></span><b>Rehearsal Guide</b></div>
+                </header>
                 <div class="su-layout">
-                    <aside class="su-side">
-                        <div>
-                            <button class="su-back" onclick="window.nav('hero')">${ti('arrow-left')} Home</button>
-                            <div class="su-brand">Interview Chameleon</div>
-                        </div>
+                    <aside class="su-side" aria-label="Briefing stages">
                         <div class="su-steps">
-                            <div class="su-si active" id="su-si-1" onclick="window._suGoStep(1)"><div class="su-sn" id="su-sn-1">1</div><div><div class="su-sl">The Role</div><div class="su-ss">Job title & context</div></div></div>
-                            <div class="su-conn"></div>
-                            <div class="su-si" id="su-si-2" onclick="window._suGoStep(2)"><div class="su-sn" id="su-sn-2">2</div><div><div class="su-sl">Interview Type</div><div class="su-ss">Choose your module</div></div></div>
-                            <div class="su-conn"></div>
-                            <div class="su-si" id="su-si-3" onclick="window._suGoStep(3)"><div class="su-sn" id="su-sn-3">3</div><div><div class="su-sl">Customize</div><div class="su-ss">Interviewer & settings</div></div></div>
-                        </div>
-                        <div class="su-summary">
-                            <div class="su-sum-t">Session Preview</div>
-                            <div class="su-sum-r"><span class="su-sum-k">Role</span><span class="su-sum-v ${state.targetRole ? '' : 'empty'}" id="su-sum-role">${state.targetRole || 'Not set'}</span></div>
-                            <div class="su-sum-r"><span class="su-sum-k">Module</span><span class="su-sum-v empty" id="su-sum-mod">Not set</span></div>
-                            <div class="su-sum-d"></div>
-                            <div class="su-sum-r"><span class="su-sum-k">Interviewer</span><span class="su-sum-v empty" id="su-sum-char">Not set</span></div>
-                            <div class="su-sum-r"><span class="su-sum-k">Difficulty</span><span class="su-sum-v" id="su-sum-diff">${state.difficulty.charAt(0).toUpperCase() + state.difficulty.slice(1)}</span></div>
-                            <div class="su-sum-r"><span class="su-sum-k">Duration</span><span class="su-sum-v" id="su-sum-dur">${state.duration === 'quick' ? 'Quick (5 Qs)' : state.duration === 'extended' ? 'Extended (20 Qs)' : 'Standard (10 Qs)'}</span></div>
-                            <div class="su-sum-r"><span class="su-sum-k">Industry</span><span class="su-sum-v" id="su-sum-ind">General</span></div>
+                            <button class="su-si active" id="su-si-1" type="button" onclick="window._suGoStep(1)"><span class="su-sn" id="su-sn-1">01</span><span><strong class="su-sl">Role</strong><small class="su-ss">Define the position you're hiring for.</small></span><span class="su-step-arrow">${ti('arrow-right')}</span></button>
+                            <button class="su-si" id="su-si-2" type="button" onclick="window._suGoStep(2)"><span class="su-sn" id="su-sn-2">02</span><span><strong class="su-sl">Format</strong><small class="su-ss">Choose how the rehearsal will run.</small></span><span class="su-step-arrow">${ti('arrow-right')}</span></button>
+                            <button class="su-si" id="su-si-3" type="button" onclick="window._suGoStep(3)"><span class="su-sn" id="su-sn-3">03</span><span><strong class="su-sl">Interviewer</strong><small class="su-ss">Select who will lead the conversation.</small></span><span class="su-step-arrow">${ti('arrow-right')}</span></button>
+                            <button class="su-si" id="su-si-4" type="button" onclick="window._suGoStep(4)"><span class="su-sn" id="su-sn-4">04</span><span><strong class="su-sl">Conditions</strong><small class="su-ss">Set the scene and adjust the difficulty.</small></span><span class="su-step-arrow">${ti('arrow-right')}</span></button>
                         </div>
                     </aside>
                     <main class="su-main">
-                        <div class="su-prog"><div class="su-prog-bar" id="su-prog" style="width:33%"></div></div>
+                        <div class="su-prog" aria-hidden="true"><div class="su-prog-bar" id="su-prog" style="width:25%"></div></div>
 
                         <!-- STEP 1 -->
                         <div class="su-panel active" id="su-p1">
-                            <div class="su-hdr"><div class="su-tag">Step 1 of 3 - The Role</div><h2>What are you interviewing for?</h2><p>Give us the context - the more detail, the sharper your AI coach will be.</p></div>
-                            <div class="su-field"><label><span class="su-ico">${ti('briefcase')}</span> Target Job Title</label><input class="su-inp" id="su-role" type="text" placeholder="e.g. Senior Product Designer" value="${state.targetRole || ''}" oninput="window._suUpdateRole()"></div>
-                            <div class="su-field"><label><span class="su-ico">${ti('file-text')}</span> Job Description <span class="su-opt">optional</span></label><textarea class="su-ta" id="su-jd" rows="5" placeholder="Paste the job requirements here...">${state.jobDescription || ''}</textarea></div>
+                            <div class="su-hdr"><div class="su-tag">Step 01 · The role</div><h2>Build the brief.</h2><p>Create a director's brief for your rehearsal. This shapes the conversation, the questions, and the context.</p></div>
+                            <div class="su-field"><label for="su-role"><span class="su-ico">${ti('briefcase')}</span> Target role</label><input class="su-inp" id="su-role" type="text" placeholder="e.g. Senior Product Designer" value="${escapeHTML(state.targetRole || '')}" oninput="window._suUpdateRole()"></div>
+                            <div class="su-field"><label for="su-jd"><span class="su-ico">${ti('file-text')}</span> Job Description <span class="su-opt">optional</span></label><textarea class="su-ta" id="su-jd" rows="5" placeholder="Paste the job requirements here..." oninput="window._suJobDescription(this.value)">${escapeHTML(state.jobDescription || '')}</textarea></div>
                             <div class="su-field">
-                                <label><span class="su-ico">${ti('paperclip')}</span> Resume <span class="su-opt">optional</span></label>
-                                <div class="su-res-tabs">
-                                    <button class="su-res-tab on" onclick="window._suResTab('upload',this)">${ti('upload')} Upload File</button>
-                                    <button class="su-res-tab" onclick="window._suResTab('paste',this)">${ti('clipboard-text')} Paste Text</button>
+                                <div class="su-field-label" id="su-resume-label"><span class="su-ico">${ti('paperclip')}</span> Resume <span class="su-opt">optional</span></div>
+                                <div class="su-res-tabs" role="tablist" aria-labelledby="su-resume-label">
+                                    <button class="su-res-tab on" id="su-res-tab-upload" type="button" role="tab" aria-selected="true" aria-controls="su-tab-upload" tabindex="0" onclick="window._suResTab('upload',this)">${ti('upload')} Upload File</button>
+                                    <button class="su-res-tab" id="su-res-tab-paste" type="button" role="tab" aria-selected="false" aria-controls="su-tab-paste" tabindex="-1" onclick="window._suResTab('paste',this)">${ti('clipboard-text')} Paste Text</button>
                                 </div>
-                                <div id="su-tab-upload">
-                                    <div class="su-dz" id="su-dropzone"><div class="su-dz-ico">${ti('cloud-upload')}</div><div class="su-dz-txt">Drop your resume here or <span>browse</span></div><div class="su-dz-sub">PDF, DOCX, or TXT</div><input type="file" id="su-file-input" accept=".pdf,.docx,.txt" style="display:none"></div>
+                                <div id="su-tab-upload" role="tabpanel" aria-labelledby="su-res-tab-upload">
+                                    <div class="su-dz" id="su-dropzone">
+                                        <div class="su-resume-visual" aria-hidden="true">
+                                            <div class="su-resume-pocket-back"></div>
+                                            <div class="su-resume-sheet">
+                                                <span class="su-resume-sheet-tab">Candidate file</span>
+                                                <div class="su-resume-paper-copy"><strong id="su-resume-name">${escapeHTML(state.resumeFileName || 'Resume')}</strong><small id="su-resume-file-state">${escapeHTML(state.resumeFileName ? (state.resumeFileMeta || 'Resume attached') : 'Ready to attach')}</small></div>
+                                                <span class="su-resume-sheet-rule su-resume-sheet-rule-a"></span>
+                                                <span class="su-resume-sheet-rule su-resume-sheet-rule-b"></span>
+                                                <span class="su-resume-sheet-rule su-resume-sheet-rule-c"></span>
+                                            </div>
+                                            <div class="su-resume-pocket-front"><span>Private working copy</span><i></i></div>
+                                        </div>
+                                        <button class="su-resume-attach" id="su-resume-pick" type="button" aria-describedby="su-resume-help">
+                                            <span class="su-resume-clip-icon" aria-hidden="true">
+                                                <svg viewBox="0 0 24 24" focusable="false"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+                                            </span>
+                                            <span><strong id="su-resume-action">${state.resumeFileName ? 'Replace your resume' : 'Attach your resume'}</strong><small id="su-resume-help">${state.resumeFileName ? 'Stored only for this local rehearsal' : 'PDF, DOCX, or TXT'}</small></span>
+                                        </button>
+                                        <input type="file" id="su-file-input" accept=".pdf,.docx,.txt" style="display:none">
+                                    </div>
                                 </div>
-                                <div id="su-tab-paste" style="display:none"><textarea class="su-ta" id="su-resume-text" rows="5" placeholder="Paste your resume summary here...">${state.resumeText || ''}</textarea></div>
+                                <div id="su-tab-paste" role="tabpanel" aria-labelledby="su-res-tab-paste" hidden><label class="sr-only" for="su-resume-text">Resume text</label><textarea class="su-ta" id="su-resume-text" rows="5" placeholder="Paste your resume summary here..." oninput="window._suResumeText(this.value)">${escapeHTML(state.resumeText || '')}</textarea></div>
                             </div>
-                            <div class="su-nav"><span></span><button class="su-btn-next" id="su-next1" onclick="window._suGoStep(2)" ${state.targetRole ? '' : 'disabled'}>Choose Module ${ti('arrow-right')}</button></div>
+                            <div class="su-nav"><span></span><button class="su-btn-next" id="su-next1" onclick="window._suGoStep(2)" ${state.targetRole ? '' : 'disabled'}>Continue to format ${ti('arrow-right')}</button></div>
                         </div>
 
                         <!-- STEP 2 -->
                         <div class="su-panel" id="su-p2">
-                            <div class="su-hdr"><div class="su-tag">Step 2 of 3 - Interview Type</div><h2>What kind of interview?</h2><p>Pick the format that matches your target role.</p></div>
+                            <div class="su-hdr"><div class="su-tag">Step 02 · The format</div><h2>Choose the rehearsal.</h2><p>Select the kind of interview you want to practice.</p></div>
                             <div class="su-mods" id="su-mods-grid"></div>
-                            <div class="su-nav"><button class="su-btn-back" onclick="window._suGoStep(1)">${ti('arrow-left')} Back</button><button class="su-btn-next" id="su-next2" onclick="window._suGoStep(3)" disabled>Set Up Interviewer ${ti('arrow-right')}</button></div>
+                            <div class="su-nav"><button class="su-btn-back" onclick="window._suGoStep(1)">${ti('arrow-left')} Back</button><button class="su-btn-next" id="su-next2" onclick="window._suGoStep(3)" ${state.selectedModule ? '' : 'disabled'}>Continue to interviewer ${ti('arrow-right')}</button></div>
                         </div>
 
                         <!-- STEP 3 -->
                         <div class="su-panel" id="su-p3">
-                            <div class="su-hdr"><div class="su-tag">Step 3 of 3 - Customize</div><h2>Who's interviewing you?</h2><p>Pick your interviewer style and dial in the session settings.</p></div>
-                            <div class="su-stress" id="su-stress-banner">
-                                <div><div class="su-stress-lbl">${ti('flame')} Stress Mode</div><div class="su-stress-sub" id="su-stress-sub">Maximum pressure. Hard - Extended - Interruptions forced on.</div></div>
-                                <div class="su-sw" id="su-stress-sw" onclick="window._suToggleStress()"><div class="su-sw-th"></div></div>
+                            <div class="su-hdr"><div class="su-tag">Step 03 · The interviewer</div><h2>Choose your interviewer.</h2><p>Select the voice, pace, and pressure of the conversation.</p></div>
+                            <div class="su-char-carousel">
+                                <button class="su-char-arrow su-char-arrow-prev" id="su-char-prev" type="button" onclick="window._suShiftChars(-1)" aria-label="Show previous interviewer">${ti('arrow-left')}</button>
+                                <div class="su-char-viewport">
+                                    <div class="su-chars" id="su-chars-grid"></div>
+                                </div>
+                                <button class="su-char-arrow su-char-arrow-next" id="su-char-next" type="button" onclick="window._suShiftChars(1)" aria-label="Show next interviewer">${ti('arrow-right')}</button>
                             </div>
-                            <div class="su-stress-alert" id="su-stress-alert">${ti('alert-triangle')} Stress Mode active - character, difficulty and duration are locked</div>
-                            <div class="su-field" style="margin-bottom:20px"><div class="su-sec-lbl">${ti('volume')} Voice Gender</div><div class="su-vtgl"><button class="su-vt on" onclick="window._suVoice(this,'female')">${ti('gender-female')} Female</button><button class="su-vt" onclick="window._suVoice(this,'male')">${ti('gender-male')} Male</button></div></div>
-                            <div class="su-sec-lbl">${ti('microphone')} Interviewer Character</div>
-                            <div class="su-chars" id="su-chars-grid"></div>
-                            <div class="su-sets" style="margin-top:24px">
-                                <div><div class="su-sec-lbl">${ti('target-arrow')} Difficulty</div><div class="su-tgl-g" id="su-diff-grp">
-                                    <button class="su-tgl ${state.difficulty === 'easy' ? 'on-easy' : ''}" onclick="window._suDiff(this,'easy','on-easy')">Easy</button>
-                                    <button class="su-tgl ${state.difficulty === 'medium' ? 'on-med' : ''}" onclick="window._suDiff(this,'medium','on-med')">Medium</button>
-                                    <button class="su-tgl ${state.difficulty === 'hard' ? 'on-hard' : ''}" onclick="window._suDiff(this,'hard','on-hard')">Hard</button>
-                                </div></div>
-                                <div><div class="su-sec-lbl">${ti('clock')} Duration</div><div class="su-tgl-g" id="su-dur-grp">
-                                    <button class="su-tgl ${state.duration === 'quick' ? 'on-amb' : ''}" onclick="window._suDur(this,'quick','Quick (5 Qs)')">Quick</button>
-                                    <button class="su-tgl ${state.duration === 'standard' ? 'on-amb' : ''}" onclick="window._suDur(this,'standard','Standard (10 Qs)')">Standard</button>
-                                    <button class="su-tgl ${state.duration === 'extended' ? 'on-amb' : ''}" onclick="window._suDur(this,'extended','Extended (20 Qs)')">Extended</button>
-                                </div></div>
-                            </div>
-                            <div class="su-field" style="margin-top:24px;margin-bottom:24px"><div class="su-sec-lbl">${ti('building')} Industry Style</div><div class="su-ind-chips" id="su-ind-chips"></div></div>
-                            <div class="su-runtime" id="su-runtime-card">
-                                <div class="su-runtime-hdr">
-                                    <div>
-                                        <div class="su-runtime-title">Local AI Runtime</div>
-                                        <div class="su-runtime-sub" id="su-runtime-message">Checking Ollama and qwen2.5:7b...</div>
+                            <div class="su-nav"><button class="su-btn-back" onclick="window._suGoStep(2)">${ti('arrow-left')} Back</button><button class="su-btn-next" id="su-next3" onclick="window._suGoStep(4)" disabled>Continue to conditions ${ti('arrow-right')}</button></div>
+                        </div>
+
+                        <!-- STEP 4 -->
+                        <div class="su-panel" id="su-p4">
+                            <div class="su-hdr"><div class="su-tag">Step 04 · The conditions</div><h2>Set the conditions.</h2><p>Decide how long, how focused, and how demanding this rehearsal should feel.</p></div>
+                            <div class="su-stress-alert" id="su-stress-alert">${ti('alert-triangle')} Pressure mode is active — difficulty, length, and interruptions are fixed.</div>
+                            <div class="su-condition-sheet">
+                                <section class="su-condition-block">
+                                    <div class="su-sec-lbl" id="su-diff-label">Difficulty</div>
+                                    <div class="su-tgl-g su-condition-options" id="su-diff-grp" role="radiogroup" aria-labelledby="su-diff-label">
+                                        <button type="button" role="radio" data-value="easy" aria-checked="${setupDifficulty === 'easy'}" tabindex="${!setupDifficulty || setupDifficulty === 'easy' ? '0' : '-1'}" class="su-tgl ${setupDifficulty === 'easy' ? 'on-easy' : ''}" onclick="window._suDiff(this,'easy')">${setupSelectionCircle('su-option-circle')}<strong>Warm-up</strong><small>Supportive prompts</small></button>
+                                        <button type="button" role="radio" data-value="medium" aria-checked="${setupDifficulty === 'medium'}" tabindex="${setupDifficulty === 'medium' ? '0' : '-1'}" class="su-tgl ${setupDifficulty === 'medium' ? 'on-med' : ''}" onclick="window._suDiff(this,'medium')">${setupSelectionCircle('su-option-circle')}<strong>Medium</strong><small>Real interview pace</small></button>
+                                        <button type="button" role="radio" data-value="hard" aria-checked="${setupDifficulty === 'hard'}" tabindex="${setupDifficulty === 'hard' ? '0' : '-1'}" class="su-tgl ${setupDifficulty === 'hard' ? 'on-hard' : ''}" onclick="window._suDiff(this,'hard')">${setupSelectionCircle('su-option-circle')}<strong>Pressure</strong><small>Demanding follow-ups</small></button>
                                     </div>
-                                    <span class="su-runtime-pill" id="su-runtime-pill">Checking</span>
+                                </section>
+                                <section class="su-condition-block su-length-block">
+                                    <div class="su-sec-lbl" id="su-duration-label">Length</div>
+                                    <div class="su-tgl-g su-condition-options" id="su-dur-grp" role="radiogroup" aria-labelledby="su-duration-label">
+                                        <button type="button" role="radio" data-value="quick" aria-checked="${setupDuration === 'quick'}" tabindex="${!setupDuration || setupDuration === 'quick' ? '0' : '-1'}" class="su-tgl ${setupDuration === 'quick' ? 'on-amb' : ''}" onclick="window._suDur(this,'quick')">${setupSelectionCircle('su-option-circle')}<strong>Quick</strong><small>· 5 questions</small></button>
+                                        <button type="button" role="radio" data-value="standard" aria-checked="${setupDuration === 'standard'}" tabindex="${setupDuration === 'standard' ? '0' : '-1'}" class="su-tgl ${setupDuration === 'standard' ? 'on-amb' : ''}" onclick="window._suDur(this,'standard')">${setupSelectionCircle('su-option-circle')}<strong>Standard</strong><small>· 10 questions</small></button>
+                                        <button type="button" role="radio" data-value="extended" aria-checked="${setupDuration === 'extended'}" tabindex="${setupDuration === 'extended' ? '0' : '-1'}" class="su-tgl ${setupDuration === 'extended' ? 'on-amb' : ''}" onclick="window._suDur(this,'extended')">${setupSelectionCircle('su-option-circle')}<strong>Extended</strong><small>· 20 questions</small></button>
+                                    </div>
+                                </section>
+                                <div class="su-condition-context">
+                                    <section class="su-condition-row">
+                                        <label for="su-ind-select"><span class="su-sec-lbl">Industry</span><small>Vocabulary and scenarios</small></label>
+                                        <select class="su-ind-select" id="su-ind-select" onchange="window._suIndSelect(this)">${SETUP_IND.map(ind => `<option value="${ind.id}" ${state.industry === ind.id ? 'selected' : ''}>${ind.label}</option>`).join('')}</select>
+                                    </section>
+                                    <section class="su-condition-row su-focus-row">
+                                        <label for="su-focus-note"><span class="su-sec-lbl">Focus note</span><small>Optional direction</small></label>
+                                        <input class="su-focus-note" id="su-focus-note" type="text" value="${escapeHTML(state.focusNote || '')}" placeholder="e.g. Push me on product metrics" oninput="window._suFocus(this.value)">
+                                    </section>
                                 </div>
-                                <div class="su-runtime-grid">
-                                    <div><span>Ollama</span><strong id="su-rt-ollama">Checking</strong></div>
-                                    <div><span>Model</span><strong id="su-rt-model">qwen2.5:7b</strong></div>
-                                    <div><span>Ready</span><strong id="su-rt-ready">Checking</strong></div>
-                                </div>
-                                <div class="su-runtime-progress" id="su-runtime-progress" style="display:none"><div id="su-runtime-progress-bar"></div></div>
-                                <div class="su-runtime-actions">
-                                    <button class="su-runtime-btn" id="su-refresh-runtime-btn" onclick="window._suRefreshRuntime()">${ti('refresh')} Refresh status</button>
-                                    <button class="su-runtime-btn primary" id="su-pull-qwen-btn" onclick="window._suPullRuntime()" style="display:none">${ti('download')} Pull qwen2.5:7b</button>
-                                </div>
+                                <section class="su-condition-row su-pressure-row" id="su-stress-banner">
+                                    <label for="su-stress-sw"><span class="su-sec-lbl" id="su-stress-label">Pressure mode</span><small id="su-stress-sub">Hard questions, extended length, and interruptions</small></label>
+                                    <button type="button" class="su-sw" id="su-stress-sw" role="switch" aria-checked="false" aria-labelledby="su-stress-label" aria-describedby="su-stress-sub" onclick="window._suToggleStress()"><span class="su-sw-th" aria-hidden="true"></span></button>
+                                </section>
                             </div>
-                            <div class="su-sec-lbl">${ti('settings')} Advanced</div>
-                            <div class="su-tr"><div><div class="su-tr-lbl">${ti('building-skyscraper')} FAANG / Big Tech Mode</div><div class="su-tr-sub">Bar-raiser standards & Leadership Principles</div></div><div class="su-sw ${state.faangMode ? 'on' : ''}" id="su-faang-sw" onclick="window._suToggleSw(this)"><div class="su-sw-th"></div></div></div>
-                            <div class="su-tr"><div><div class="su-tr-lbl">${ti('bolt')} Random Interruptions</div><div class="su-tr-sub">AI interrupts mid-response to test composure</div></div><div class="su-sw ${state.interruptionsEnabled ? 'on' : ''}" id="su-int-sw" onclick="window._suToggleSw(this)"><div class="su-sw-th"></div></div></div>
-                            <div class="su-nav"><button class="su-btn-back" onclick="window._suGoStep(2)">${ti('arrow-left')} Back</button><button class="su-btn-launch" id="su-launch-btn" onclick="window._suLaunch()" disabled>${ti('rocket')} Launch Interview Session</button></div>
+                            <details class="su-runtime-disclosure">
+                                <summary>Local runtime & advanced rehearsal controls</summary>
+                                <div class="su-runtime" id="su-runtime-card">
+                                    <div class="su-runtime-hdr">
+                                        <div>
+                                            <div class="su-runtime-title">Local AI Runtime</div>
+                                        <div class="su-runtime-sub" id="su-runtime-message">Checking Ollama and your selected model...</div>
+                                        </div>
+                                        <span class="su-runtime-pill" id="su-runtime-pill">Checking</span>
+                                    </div>
+                                    <div class="su-runtime-grid">
+                                        <div><span>Ollama</span><strong id="su-rt-ollama">Checking</strong></div>
+                                        <div><span>Model</span><strong id="su-rt-model">${escapeHTML(LOCAL_MODEL)}</strong></div>
+                                        <div><span>Ready</span><strong id="su-rt-ready">Checking</strong></div>
+                                        <div><span>Storage</span><strong id="su-rt-disk">Checking</strong></div>
+                                        <div><span>Memory</span><strong id="su-rt-memory">Checking</strong></div>
+                                        <div><span>Speech input</span><strong id="su-rt-speech">Optional</strong></div>
+                                    </div>
+                                    <div class="su-runtime-progress" id="su-runtime-progress" style="display:none"><div id="su-runtime-progress-bar"></div></div>
+                                    <div class="su-runtime-actions">
+                                        <button class="su-runtime-btn" id="su-refresh-runtime-btn" onclick="window._suRefreshRuntime()">${ti('refresh')} Refresh status</button>
+                                        <button class="su-runtime-btn primary" id="su-pull-model-btn" onclick="window._suPullRuntime()" style="display:none">${ti('download')} Download selected model</button>
+                                        <button class="su-runtime-btn" onclick="window._suManageModels()">${ti('cpu')} Manage AI models</button>
+                                        <button class="su-runtime-btn" id="su-benchmark-runtime-btn" onclick="window._suBenchmarkRuntime()">${ti('gauge')} Test AI speed</button>
+                                        <button class="su-runtime-btn" id="su-test-media-btn" onclick="window._suTestPermissions()">${ti('device-desktop-check')} Test camera & mic</button>
+                                    </div>
+                                    <div class="su-runtime-sub" id="su-capability-result" role="status" aria-live="polite"></div>
+                                    <label class="su-runtime-consent"><input id="su-network-consent" type="checkbox"> Allow portfolio page requests after confirmation</label>
+                                    <label class="su-runtime-consent"><input id="su-camera-coaching-pref" type="checkbox"> Enable experimental observable camera coaching</label>
+                                </div>
+                                <div class="su-sec-lbl">Advanced</div>
+                                <div class="su-tr"><div><div class="su-tr-lbl" id="su-faang-label">FAANG / Big Tech Mode</div><div class="su-tr-sub" id="su-faang-desc">Bar-raiser standards & Leadership Principles</div></div><button type="button" class="su-sw ${state.faangMode ? 'on' : ''}" id="su-faang-sw" role="switch" aria-checked="${state.faangMode}" aria-labelledby="su-faang-label" aria-describedby="su-faang-desc" onclick="window._suToggleSw(this)"><span class="su-sw-th" aria-hidden="true"></span></button></div>
+                                <div class="su-tr"><div><div class="su-tr-lbl" id="su-int-label">Random Interruptions</div><div class="su-tr-sub" id="su-int-desc">AI interrupts mid-response to test composure</div></div><button type="button" class="su-sw ${state.interruptionsEnabled ? 'on' : ''}" id="su-int-sw" role="switch" aria-checked="${state.interruptionsEnabled}" aria-labelledby="su-int-label" aria-describedby="su-int-desc" onclick="window._suToggleSw(this)"><span class="su-sw-th" aria-hidden="true"></span></button></div>
+                            </details>
+                            <div class="su-ready-mark">Ready for rehearsal</div>
+                            <div class="su-nav"><button class="su-btn-back" onclick="window._suGoStep(3)">${ti('arrow-left')} Back</button><button class="su-btn-launch" id="su-launch-btn" onclick="window._suLaunch()" disabled>Begin the rehearsal ${ti('arrow-right')}</button></div>
                         </div>
                     </main>
+                    <aside class="su-brief" aria-label="Rehearsal summary">
+                        <div class="su-brief-heading"><span>The rehearsal</span><i></i></div>
+                        <div class="su-summary">
+                            <div class="su-sum-r"><span class="su-sum-k">Role</span><span class="su-sum-v ${state.targetRole ? '' : 'empty'}" id="su-sum-role">${escapeHTML(state.targetRole || 'To be set')}</span></div>
+                            <div class="su-sum-r"><span class="su-sum-k">Format</span><span class="su-sum-v ${state.selectedModule ? '' : 'empty'}" id="su-sum-mod">${SETUP_MODS.find(m => m.id === state.selectedModule)?.title || 'To be selected'}</span></div>
+                            <div class="su-sum-r"><span class="su-sum-k">Interviewer</span><span class="su-sum-v empty" id="su-sum-char">To be selected</span></div>
+                            <div class="su-sum-r"><span class="su-sum-k">Difficulty</span><span class="su-sum-v ${setupDifficulty ? '' : 'empty'}" id="su-sum-diff">${setupDifficulty ? setupDifficulty.charAt(0).toUpperCase() + setupDifficulty.slice(1) : 'To be selected'}</span></div>
+                            <div class="su-sum-r"><span class="su-sum-k">Length</span><span class="su-sum-v ${setupDuration ? '' : 'empty'}" id="su-sum-dur">${setupDuration === 'quick' ? 'Quick · 5 questions' : setupDuration === 'extended' ? 'Extended · 20 questions' : setupDuration === 'standard' ? 'Standard · 10 questions' : 'To be selected'}</span></div>
+                            <div class="su-sum-r"><span class="su-sum-k">Industry</span><span class="su-sum-v" id="su-sum-ind">${SETUP_IND.find(i => i.id === state.industry)?.label || 'General'}</span></div>
+                        </div>
+                        <div class="su-brief-status" id="su-brief-status">
+                            <img class="su-brief-stamp" id="su-brief-stamp" src="/static/assets/setup/local-ai-checking-stamp.webp" width="560" height="280" decoding="async" alt="Local AI checking">
+                            <span class="su-brief-status-copy"><strong id="su-brief-status-text">Local AI checking</strong><small>Your rehearsal stays on this machine.</small></span>
+                        </div>
+                    </aside>
                 </div>
             </div>
         `;
@@ -2057,13 +3149,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Render module cards
         const modsGrid = document.getElementById('su-mods-grid');
         if (modsGrid) {
-            modsGrid.innerHTML = SETUP_MODS.map(m => `
-                <div class="su-mod ${state.selectedModule === m.id ? 'sel' : ''}" onclick="window._suSelectMod('${m.id}',this)">
-                    <div class="su-mod-ico">${ti(m.icon)}</div>
-                    <div class="su-mod-t">${m.title}</div>
-                    <div class="su-mod-d">${m.desc}</div>
-                    <div class="su-mod-ps">${m.pills.map(p => `<span class="su-mod-p">${p}</span>`).join('')}</div>
-                </div>
+            modsGrid.innerHTML = SETUP_MODS.map((m, index) => `
+                <button type="button" class="su-mod ${state.selectedModule === m.id ? 'sel' : ''}" aria-pressed="${state.selectedModule === m.id}" onclick="window._suSelectMod('${m.id}',this)">
+                    <span class="su-mod-number-wrap">${setupSelectionCircle('su-mod-circle')}<span class="su-mod-n">${String(index + 1).padStart(2, '0')}</span></span>
+                    <span class="su-mod-t">${m.title}</span>
+                    <span class="su-mod-d">${m.desc}</span>
+                    <span class="su-mod-duration">${ti('clock')}<span>${m.duration}</span></span>
+                </button>
             `).join('');
         }
 
@@ -2075,29 +3167,187 @@ document.addEventListener('DOMContentLoaded', () => {
             `).join('');
         }
 
+        function getSetupCharVisibleCount() {
+            // Measure the usable carousel rather than the whole monitor. The two
+            // sidebars can make an otherwise-wide browser effectively narrow.
+            const viewport = document.querySelector('.su-char-viewport');
+            const width = viewport?.clientWidth || window.innerWidth;
+            if (width < 570) return 1;
+            if (width < 880) return 2;
+            return 3;
+        }
+
+        function syncSetupCharCarousel(animate = true) {
+            const grid = document.getElementById('su-chars-grid');
+            if (!grid || !grid.children.length) return;
+            const visibleCount = getSetupCharVisibleCount();
+            const carousel = grid.closest('.su-char-carousel');
+            if (carousel) {
+                carousel.classList.remove('shows-1', 'shows-2', 'shows-3');
+                carousel.classList.add(`shows-${visibleCount}`);
+            }
+            if (!setupCharAnimating) {
+                const targetCard = grid.children[setupCharTrackIndex];
+                const distance = targetCard ? targetCard.offsetLeft : 0;
+                grid.classList.add('no-motion');
+                grid.style.transform = `translate3d(${-distance}px, 0, 0)`;
+                if (animate) void grid.offsetWidth;
+                requestAnimationFrame(() => grid.classList.remove('no-motion'));
+            }
+
+            const prev = document.getElementById('su-char-prev');
+            const next = document.getElementById('su-char-next');
+            const canShift = SETUP_CHARS.length > visibleCount;
+            if (prev) prev.disabled = !canShift;
+            if (next) next.disabled = !canShift;
+        }
+
+        function syncSetupCharSelection() {
+            const sel = setupCharIdx >= 0 ? SETUP_CHARS[setupCharIdx] : null;
+            const sumChar = document.getElementById('su-sum-char');
+            const next = document.getElementById('su-next3');
+            if (sel) {
+                if (sumChar) {
+                    sumChar.textContent = sel.name + ' \u00b7 ' + sel.role;
+                    sumChar.classList.remove('empty');
+                }
+                state.interviewerPersona = {
+                    character: sel.id,
+                    gender: sel.gender,
+                    name: sel.name,
+                    role: sel.role,
+                    image: sel.image
+                };
+                if (next) next.disabled = false;
+            } else {
+                if (sumChar) {
+                    sumChar.textContent = 'To be selected';
+                    sumChar.classList.add('empty');
+                }
+                state.interviewerPersona = null;
+                if (next) next.disabled = true;
+            }
+            syncSetupLaunchState();
+        }
+
         // Render characters
         function renderSetupChars() {
-            const list = SETUP_CHARS[setupVoice];
             const grid = document.getElementById('su-chars-grid');
             if (!grid) return;
-            grid.innerHTML = list.map((c, i) => `
-                <div class="su-char ${i === setupCharIdx ? 'sel' : ''} ${stressMode && i !== 2 ? 'locked' : ''}" onclick="window._suChar(${i})">
-                    <div class="su-char-e">${ti(c.icon)}</div>
-                    <div class="su-char-n">${c.name}</div>
-                    <div class="su-char-r">${c.role}</div>
-                    <div class="su-char-d">${c.desc}</div>
-                </div>
+            const rail = Array.from({ length: SETUP_CHARS.length * 3 }, (_, railIndex) => {
+                const i = railIndex % SETUP_CHARS.length;
+                return { c: SETUP_CHARS[i], i };
+            });
+            grid.innerHTML = rail.map(({ c, i }) => `
+                <button type="button" class="su-char ${i === setupCharIdx ? 'sel' : ''}" data-char-index="${i}" onclick="window._suChar(${i})" aria-pressed="${i === setupCharIdx}">
+                    <span class="su-char-portrait"><img src="${c.image}" loading="eager" decoding="async" alt="${c.name}, ${c.role}"></span>
+                    <span class="su-char-meta"><strong class="su-char-n">${c.name}</strong><span class="su-char-r">${c.role}</span><small class="su-char-pace">${c.pace}</small></span>
+                </button>
             `).join('');
-            const sel = list[setupCharIdx];
-            const sumChar = document.getElementById('su-sum-char');
-            if (sumChar) { sumChar.textContent = sel.name + ' \u00b7 ' + sel.role; sumChar.classList.remove('empty'); }
-            state.interviewerPersona = { character: sel.id, gender: setupVoice };
+            syncSetupCharSelection();
+            requestAnimationFrame(() => syncSetupCharCarousel(false));
         }
         renderSetupChars();
+
+        if (window._suCharResizeHandler) window.removeEventListener('resize', window._suCharResizeHandler);
+        window._suCharResizeHandler = () => syncSetupCharCarousel(false);
+        window.addEventListener('resize', window._suCharResizeHandler, { passive: true });
 
         function setSetupText(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = value;
+        }
+
+        const difficultyClasses = { easy: 'on-easy', medium: 'on-med', hard: 'on-hard' };
+        const durationLabels = {
+            quick: 'Quick · 5 questions',
+            standard: 'Standard · 10 questions',
+            extended: 'Extended · 20 questions',
+        };
+
+        function syncSetupLaunchState() {
+            const launchBtn = document.getElementById('su-launch-btn');
+            if (!launchBtn) return;
+            const choicesReady = setupCharIdx >= 0 && Boolean(setupDifficulty) && Boolean(setupDuration);
+            const runtimeReady = Boolean(setupRuntime.data?.ready) && !setupRuntime.loading && !setupRuntime.pulling;
+            launchBtn.disabled = !(choicesReady && runtimeReady);
+            if (!setupDifficulty || !setupDuration) {
+                launchBtn.title = 'Choose a difficulty and length before launching.';
+            } else if (setupCharIdx < 0) {
+                launchBtn.title = 'Choose an interviewer before launching.';
+            } else {
+                launchBtn.title = runtimeReady ? '' : `Start Ollama and install ${LOCAL_MODEL} before launching.`;
+            }
+        }
+
+        function syncSetupConditions(animateButtons = []) {
+            const drawing = new Set(Array.isArray(animateButtons) ? animateButtons : [animateButtons].filter(Boolean));
+            const syncGroup = (selector, selectedValue, classForValue) => {
+                const buttons = [...document.querySelectorAll(selector)];
+                buttons.forEach((button, index) => {
+                    const selected = button.dataset.value === selectedValue;
+                    button.className = `su-tgl${selected ? ` ${classForValue(button.dataset.value)}` : ''}${stressMode ? ' locked' : ''}${selected && drawing.has(button) ? ' is-drawing' : ''}`;
+                    button.setAttribute('aria-checked', String(selected));
+                    button.disabled = stressMode;
+                    if (stressMode) button.setAttribute('aria-disabled', 'true');
+                    else button.removeAttribute('aria-disabled');
+                    button.tabIndex = selected || (!selectedValue && index === 0) ? 0 : -1;
+                });
+            };
+            syncGroup('#su-diff-grp .su-tgl', setupDifficulty, value => difficultyClasses[value] || '');
+            syncGroup('#su-dur-grp .su-tgl', setupDuration, () => 'on-amb');
+
+            const stressSwitch = document.getElementById('su-stress-sw');
+            const stressBanner = document.getElementById('su-stress-banner');
+            const stressAlert = document.getElementById('su-stress-alert');
+            stressSwitch?.classList.toggle('on', stressMode);
+            stressSwitch?.setAttribute('aria-checked', String(stressMode));
+            stressBanner?.classList.toggle('on', stressMode);
+            stressAlert?.classList.toggle('show', stressMode);
+
+            const interruptionSwitch = document.getElementById('su-int-sw');
+            if (interruptionSwitch) {
+                interruptionSwitch.classList.toggle('locked-on', stressMode);
+                interruptionSwitch.classList.toggle('on', !stressMode && Boolean(state.interruptionsEnabled));
+                interruptionSwitch.disabled = stressMode;
+                interruptionSwitch.setAttribute('aria-checked', String(stressMode || Boolean(state.interruptionsEnabled)));
+                if (stressMode) interruptionSwitch.setAttribute('aria-disabled', 'true');
+                else interruptionSwitch.removeAttribute('aria-disabled');
+            }
+
+            const difficultySummary = document.getElementById('su-sum-diff');
+            if (difficultySummary) {
+                difficultySummary.textContent = setupDifficulty
+                    ? setupDifficulty.charAt(0).toUpperCase() + setupDifficulty.slice(1)
+                    : 'To be selected';
+                difficultySummary.classList.toggle('empty', !setupDifficulty);
+            }
+            const durationSummary = document.getElementById('su-sum-dur');
+            if (durationSummary) {
+                durationSummary.textContent = durationLabels[setupDuration] || 'To be selected';
+                durationSummary.classList.toggle('empty', !setupDuration);
+            }
+            syncSetupLaunchState();
+        }
+
+        function captureSetupDraft() {
+            state.targetRole = document.getElementById('su-role')?.value || state.targetRole || '';
+            state.jobDescription = document.getElementById('su-jd')?.value || '';
+            const resumeText = document.getElementById('su-resume-text');
+            if (resumeText) state.resumeText = resumeText.value;
+            state.faangMode = document.getElementById('su-faang-sw')?.getAttribute('aria-checked') === 'true';
+            state.interruptionsEnabled = document.getElementById('su-int-sw')?.getAttribute('aria-checked') === 'true';
+            setupDraft = {
+                step: setupStep,
+                charIndex: setupCharIdx,
+                stressMode,
+                difficulty: setupDifficulty,
+                duration: setupDuration,
+                preStressDifficulty,
+                preStressDuration,
+                preStressInterruptions,
+            };
+            return setupDraft;
         }
 
         function parsePullEvent(rawEvent) {
@@ -2116,7 +3366,7 @@ document.addEventListener('DOMContentLoaded', () => {
         function renderSetupRuntime() {
             const data = setupRuntime.data || {};
             const connected = Boolean(data.ollama_connected);
-            const hasQwen = Boolean(data.has_recommended);
+            const hasSelected = Boolean(data.has_selected ?? data.has_recommended);
             const ready = Boolean(data.ready);
             const message = setupRuntime.pulling
                 ? (setupRuntime.pullStatus || `Pulling ${LOCAL_MODEL}...`)
@@ -2132,6 +3382,49 @@ document.addEventListener('DOMContentLoaded', () => {
                         : 'Ollama stopped';
             const variant = setupRuntime.loading ? '' : ready ? 'ready' : connected ? 'warn' : 'bad';
 
+            const briefLabel = setupRuntime.loading
+                ? 'Local AI checking'
+                : ready
+                    ? 'Local AI ready'
+                    : connected
+                        ? 'Local model missing'
+                        : 'Ollama is stopped';
+
+            const briefStatus = document.getElementById('su-brief-status');
+            if (briefStatus) {
+                briefStatus.classList.remove('ready', 'warn', 'bad');
+                if (variant) briefStatus.classList.add(variant);
+            }
+            setSetupText('su-brief-status-text', briefLabel);
+            const briefStamp = document.getElementById('su-brief-stamp');
+            if (briefStamp) {
+                const nextStamp = setupRuntime.loading
+                    ? '/static/assets/setup/local-ai-checking-stamp.webp'
+                    : ready
+                        ? '/static/assets/setup/local-ai-ready-stamp.webp'
+                        : connected
+                            ? '/static/assets/setup/local-ai-model-missing-stamp.webp'
+                            : '/static/assets/setup/local-ai-stopped-stamp.webp';
+                briefStamp.alt = briefLabel;
+                if (briefStamp.dataset.target !== nextStamp) {
+                    briefStamp.dataset.target = nextStamp;
+                    const incomingStamp = new Image();
+                    incomingStamp.decoding = 'async';
+                    incomingStamp.src = nextStamp;
+                    const revealStamp = () => {
+                        if (briefStamp.dataset.target !== nextStamp) return;
+                        briefStamp.classList.add('is-changing');
+                        window.setTimeout(() => {
+                            if (briefStamp.dataset.target !== nextStamp) return;
+                            briefStamp.src = nextStamp;
+                            window.requestAnimationFrame(() => briefStamp.classList.remove('is-changing'));
+                        }, 150);
+                    };
+                    if (incomingStamp.decode) incomingStamp.decode().then(revealStamp).catch(revealStamp);
+                    else incomingStamp.onload = revealStamp;
+                }
+            }
+
             const card = document.getElementById('su-runtime-card');
             if (card) {
                 card.classList.remove('ready', 'warn', 'bad');
@@ -2140,8 +3433,11 @@ document.addEventListener('DOMContentLoaded', () => {
             setSetupText('su-runtime-message', message);
             setSetupText('su-runtime-pill', pill);
             setSetupText('su-rt-ollama', setupRuntime.loading ? 'Checking' : connected ? 'Yes' : 'No');
-            setSetupText('su-rt-model', setupRuntime.loading ? LOCAL_MODEL : hasQwen ? `${LOCAL_MODEL} installed` : `${LOCAL_MODEL} missing`);
+            setSetupText('su-rt-model', setupRuntime.loading ? LOCAL_MODEL : hasSelected ? `${LOCAL_MODEL} installed` : `${LOCAL_MODEL} missing`);
             setSetupText('su-rt-ready', setupRuntime.loading ? 'Checking' : ready ? 'Yes' : 'No');
+            setSetupText('su-rt-disk', setupRuntime.loading ? 'Checking' : data.disk_label || 'Unknown');
+            setSetupText('su-rt-memory', setupRuntime.loading ? 'Checking' : data.memory_label || 'Unknown');
+            setSetupText('su-rt-speech', setupRuntime.loading ? 'Checking' : data.speech_label || 'Optional pack missing');
 
             const progress = document.getElementById('su-runtime-progress');
             const progressBar = document.getElementById('su-runtime-progress-bar');
@@ -2151,18 +3447,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const refreshBtn = document.getElementById('su-refresh-runtime-btn');
             if (refreshBtn) refreshBtn.disabled = setupRuntime.loading || setupRuntime.pulling;
 
-            const pullBtn = document.getElementById('su-pull-qwen-btn');
+            const pullBtn = document.getElementById('su-pull-model-btn');
             if (pullBtn) {
-                pullBtn.style.display = connected && !hasQwen && !ready ? 'inline-flex' : 'none';
+                pullBtn.style.display = connected && !hasSelected && !ready ? 'inline-flex' : 'none';
                 pullBtn.disabled = setupRuntime.loading || setupRuntime.pulling;
                 pullBtn.innerHTML = setupRuntime.pulling ? `${ti('download')} Pulling ${LOCAL_MODEL}...` : `${ti('download')} Pull ${LOCAL_MODEL}`;
             }
 
-            const launchBtn = document.getElementById('su-launch-btn');
-            if (launchBtn) {
-                launchBtn.disabled = setupRuntime.loading || setupRuntime.pulling || !ready;
-                launchBtn.title = ready ? '' : `Start Ollama and install ${LOCAL_MODEL} before launching.`;
-            }
+            syncSetupLaunchState();
         }
 
         window._suRefreshRuntime = async () => {
@@ -2171,11 +3463,11 @@ document.addEventListener('DOMContentLoaded', () => {
             renderSetupRuntime();
             try {
                 const [statusRes, modelsRes] = await Promise.all([
-                    fetch('/api/setup/status'),
+                    fetch('/api/system/status'),
                     fetch('/api/models'),
                 ]);
                 if (!statusRes.ok) throw new Error(`Status check failed (${statusRes.status})`);
-                const statusData = await statusRes.json();
+                const systemData = await statusRes.json();
                 let modelData = {};
                 if (modelsRes.ok) {
                     try {
@@ -2184,18 +3476,44 @@ document.addEventListener('DOMContentLoaded', () => {
                         modelData = {};
                     }
                 }
+                LOCAL_MODEL = modelData.selected_model || LOCAL_MODEL;
+                state.selectedModel = LOCAL_MODEL;
+                const ollamaConnected = Boolean(systemData.capabilities?.ollama?.ready);
+                const selectedModelReady = Boolean(systemData.capabilities?.model?.ready);
+                const localAiReady = ollamaConnected && selectedModelReady;
+                const meetsRecommendedHardware = Boolean(systemData.ready_for_ai_rehearsal);
                 setupRuntime.data = {
-                    ...statusData,
+                    ollama_connected: ollamaConnected,
+                    has_selected: selectedModelReady,
+                    // Memory and free-space targets are performance guidance,
+                    // not a reason to trap someone in Setup after their local
+                    // model is installed and reachable.
+                    ready: localAiReady,
+                    full_system_ready: meetsRecommendedHardware,
+                    status_message: localAiReady
+                        ? (meetsRecommendedHardware
+                            ? `${LOCAL_MODEL} is ready for a local rehearsal.`
+                            : `${LOCAL_MODEL} is ready. This computer is below the recommended memory or free-space target, so responses may be slower.`)
+                        : !ollamaConnected
+                            ? 'Ollama is not reachable. Start it locally, then refresh status.'
+                            : `${LOCAL_MODEL} is not installed or selected yet.`,
+                    disk_label: systemData.hardware?.disk?.free_gib == null
+                        ? 'Unknown'
+                        : `${systemData.hardware.disk.free_gib} GB free`,
+                    memory_label: systemData.hardware?.memory_bytes
+                        ? `${Math.round(systemData.hardware.memory_bytes / (1024 ** 3))} GB`
+                        : 'Not reported',
+                    speech_label: systemData.capabilities?.speech_input?.ready ? 'Ready' : 'Optional pack missing',
                     recommended_model: LOCAL_MODEL,
                     models_status: modelData,
+                    system: systemData,
                 };
-                state.selectedModel = LOCAL_MODEL;
                 setupRuntime.pullStatus = '';
                 setupRuntime.pullPercent = setupRuntime.data.ready ? 0 : setupRuntime.pullPercent;
             } catch (err) {
                 setupRuntime.data = {
                     ollama_connected: false,
-                    has_recommended: false,
+                    has_selected: false,
                     ready: false,
                     recommended_model: LOCAL_MODEL,
                     status_message: 'Ollama is not reachable. Start Ollama locally, then refresh status.',
@@ -2258,40 +3576,153 @@ document.addEventListener('DOMContentLoaded', () => {
         // Wire up file upload
         const dz = document.getElementById('su-dropzone');
         const fi = document.getElementById('su-file-input');
+        const pickResume = document.getElementById('su-resume-pick');
         if (dz && fi) {
-            dz.onclick = () => fi.click();
-            fi.onchange = async (e) => {
-                const file = e.target.files[0];
+            if (state.resumeFileName) dz.classList.add('is-ready');
+            const resumeFileMeta = (file) => {
+                const size = file.size >= 1024 * 1024
+                    ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+                    : `${Math.max(1, Math.round(file.size / 1024))} KB`;
+                const ext = (file.name.split('.').pop() || 'file').toUpperCase();
+                return `${ext} · ${size}`;
+            };
+            const handleResumeFile = async (file) => {
                 if (!file) return;
-                dz.innerHTML = `<div class="su-dz-ico">${ti('file-text')}</div><div class="su-dz-txt">${escapeHTML(file.name)}</div><div class="su-dz-sub">Uploading...</div>`;
+                state.resumeFileName = file.name;
+                state.resumeFileMeta = resumeFileMeta(file);
+                setSetupText('su-resume-name', file.name);
+                setSetupText('su-resume-file-state', state.resumeFileMeta);
+                setSetupText('su-resume-action', 'Reading your resume');
+                setSetupText('su-resume-help', 'This stays on your machine');
+                dz.classList.remove('is-ready', 'is-error', 'is-dragging');
+                dz.classList.add('is-uploading');
                 const formData = new FormData();
                 formData.append('file', file);
                 try {
                     const res = await fetch('/api/parse-resume', { method: 'POST', body: formData });
+                    if (!res.ok) throw new Error(`Resume parser returned ${res.status}`);
                     const data = await res.json();
                     state.resumeText = data.text || '';
-                    dz.innerHTML = `<div class="su-dz-ico">${ti('circle-check')}</div><div class="su-dz-txt">${escapeHTML(file.name)}</div><div class="su-dz-sub">Resume uploaded</div>`;
+                    setSetupText('su-resume-file-state', state.resumeFileMeta);
+                    setSetupText('su-resume-action', 'Replace your resume');
+                    setSetupText('su-resume-help', 'Stored only for this local rehearsal');
+                    dz.classList.remove('is-uploading', 'is-error');
+                    dz.classList.add('is-ready');
                 } catch (err) {
-                    dz.innerHTML = `<div class="su-dz-ico">${ti('circle-x')}</div><div class="su-dz-txt">Upload failed</div><div class="su-dz-sub">Try pasting instead</div>`;
+                    state.resumeFileName = '';
+                    state.resumeFileMeta = '';
+                    setSetupText('su-resume-name', 'Resume');
+                    setSetupText('su-resume-file-state', 'Upload failed');
+                    setSetupText('su-resume-action', 'Try attaching again');
+                    setSetupText('su-resume-help', 'Or paste the resume text');
+                    dz.classList.remove('is-uploading', 'is-ready');
+                    dz.classList.add('is-error');
                 }
             };
+            if (pickResume) pickResume.onclick = () => {
+                fi.value = '';
+                fi.click();
+            };
+            fi.onchange = (e) => handleResumeFile(e.target.files[0]);
+            dz.ondragover = (e) => {
+                e.preventDefault();
+                dz.classList.add('is-dragging');
+            };
+            dz.ondragleave = () => dz.classList.remove('is-dragging');
+            dz.ondrop = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dz.classList.remove('is-dragging');
+                handleResumeFile(e.dataTransfer?.files?.[0]);
+            };
         }
+
+        const wireSetupRovingGroup = (container, itemSelector) => {
+            if (!container) return;
+            container.addEventListener('keydown', event => {
+                const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+                if (!keys.includes(event.key)) return;
+                const items = [...container.querySelectorAll(itemSelector)].filter(item => !item.disabled);
+                if (!items.length) return;
+                const current = Math.max(0, items.indexOf(document.activeElement));
+                let next = current;
+                if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = items.length - 1;
+                else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % items.length;
+                else next = (current - 1 + items.length) % items.length;
+                event.preventDefault();
+                items[next].focus();
+                items[next].click();
+            });
+        };
+        wireSetupRovingGroup(document.querySelector('.su-res-tabs'), '[role="tab"]');
+        wireSetupRovingGroup(document.getElementById('su-diff-grp'), '[role="radio"]');
+        wireSetupRovingGroup(document.getElementById('su-dur-grp'), '[role="radio"]');
 
         // Global functions
         window._suGoStep = (n) => {
             const role = (document.getElementById('su-role')?.value || '').trim();
-            if (n === 2 && !role) return;
-            if (n === 3 && !state.selectedModule) return;
+            if (n > 1 && !role) return;
+            if (n > 2 && !state.selectedModule) return;
+            if (n > 3 && setupCharIdx < 0) return;
             setupStep = n;
-            [1, 2, 3].forEach(i => {
+            [1, 2, 3, 4].forEach(i => {
                 const p = document.getElementById('su-p' + i);
                 const si = document.getElementById('su-si-' + i);
                 if (p) p.classList.toggle('active', i === n);
                 if (si) { si.classList.remove('active', 'done'); if (i === n) si.classList.add('active'); if (i < n) si.classList.add('done'); }
             });
             const prog = document.getElementById('su-prog');
-            if (prog) prog.style.width = (n / 3 * 100) + '%';
+            if (prog) prog.style.width = (n / 4 * 100) + '%';
+            if (n === 3) requestAnimationFrame(() => syncSetupCharCarousel(false));
         };
+
+        window._suBenchmarkRuntime = async () => {
+            const output = document.getElementById('su-capability-result');
+            if (output) output.textContent = 'Running a short local inference check…';
+            try {
+                const response = await fetch('/api/system/inference-check', { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.message || data.detail || 'Performance check failed');
+                if (output) output.textContent = `AI response: ${data.seconds}s · ${data.rating}.`;
+            } catch (error) {
+                if (output) output.textContent = error.message || 'The AI performance check could not run.';
+            }
+        };
+
+        window._suTestPermissions = async () => {
+            const output = document.getElementById('su-capability-result');
+            if (output) output.textContent = 'Requesting local camera and microphone access…';
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                const hasCamera = stream.getVideoTracks().length > 0;
+                const hasMicrophone = stream.getAudioTracks().length > 0;
+                stream.getTracks().forEach(track => track.stop());
+                const localVoice = window.LocalSpeech?.available() ? 'local voice ready' : 'text-only interviewer';
+                if (output) output.textContent = `Camera ${hasCamera ? 'ready' : 'missing'} · microphone ${hasMicrophone ? 'ready' : 'missing'} · ${localVoice}.`;
+            } catch (error) {
+                if (output) output.textContent = 'Camera or microphone permission was denied. Text practice remains available.';
+            }
+        };
+
+        (async () => {
+            try {
+                const response = await fetch('/api/preferences');
+                const data = await response.json();
+                const preferences = data.preferences || {};
+                const network = document.getElementById('su-network-consent');
+                const camera = document.getElementById('su-camera-coaching-pref');
+                if (network) network.checked = Boolean(preferences.portfolio_network_consent);
+                if (camera) camera.checked = Boolean(preferences.camera_coaching);
+                const savePreference = async (key, value) => fetch('/api/preferences', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [key]: value })
+                });
+                network?.addEventListener('change', () => savePreference('portfolio_network_consent', network.checked));
+                camera?.addEventListener('change', () => savePreference('camera_coaching', camera.checked));
+            } catch (error) {
+                console.warn('Preferences are temporarily unavailable.', error);
+            }
+        })();
 
         window._suUpdateRole = () => {
             const v = document.getElementById('su-role')?.value || '';
@@ -2302,10 +3733,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (btn) btn.disabled = !v.trim();
         };
 
+        window._suJobDescription = (value) => { state.jobDescription = value; };
+        window._suResumeText = (value) => { state.resumeText = value; };
+        window._suManageModels = () => {
+            captureSetupDraft();
+            navigate('models', { returnTo: 'setup' });
+        };
+
         window._suSelectMod = (id, card) => {
             state.selectedModule = id;
-            document.querySelectorAll('.su-mod').forEach(c => c.classList.remove('sel'));
-            card.classList.add('sel');
+            document.querySelectorAll('.su-mod').forEach(c => {
+                c.classList.remove('sel', 'is-drawing');
+                c.setAttribute('aria-pressed', 'false');
+            });
+            // Force a layout boundary so choosing an already-selected format
+            // redraws the two ink passes instead of leaving a static mark.
+            void card.offsetWidth;
+            card.classList.add('sel', 'is-drawing');
+            card.setAttribute('aria-pressed', 'true');
             const mod = SETUP_MODS.find(m => m.id === id);
             const el = document.getElementById('su-sum-mod');
             if (el && mod) { el.textContent = mod.title; el.classList.remove('empty'); }
@@ -2313,31 +3758,84 @@ document.addEventListener('DOMContentLoaded', () => {
             if (btn) btn.disabled = false;
         };
 
-        window._suChar = (i) => { if (!stressMode) { setupCharIdx = i; renderSetupChars(); } };
+        window._suChar = (i) => {
+            setupCharIdx = i;
+            document.querySelectorAll('#su-chars-grid .su-char').forEach(card => {
+                const selected = Number(card.dataset.charIndex) === i;
+                card.classList.toggle('sel', selected);
+                card.setAttribute('aria-pressed', String(selected));
+            });
+            syncSetupCharSelection();
+            syncSetupLaunchState();
+        };
+        window._suShiftChars = (direction) => {
+            const grid = document.getElementById('su-chars-grid');
+            if (!grid || setupCharAnimating || grid.children.length < 2 || !direction) return;
+            if (SETUP_CHARS.length <= getSetupCharVisibleCount()) return;
 
-        window._suVoice = (btn, v) => {
-            document.querySelectorAll('.su-vt').forEach(b => b.classList.remove('on'));
-            btn.classList.add('on');
-            setupVoice = v;
-            renderSetupChars();
+            setupCharAnimating = true;
+            const shift = window.InterviewCarousel.nextState(
+                setupCharTrackIndex,
+                setupCharOffset,
+                direction,
+                SETUP_CHARS.length,
+            );
+            const destinationIndex = shift.destinationIndex;
+            const destinationCard = grid.children[destinationIndex];
+            if (!destinationCard) {
+                setupCharAnimating = false;
+                return;
+            }
+            const finishAfterTransition = (callback) => {
+                let finished = false;
+                const finish = (event) => {
+                    if (finished || (event && (event.target !== grid || event.propertyName !== 'transform'))) return;
+                    finished = true;
+                    grid.removeEventListener('transitionend', finish);
+                    callback();
+                };
+                grid.addEventListener('transitionend', finish);
+                window.setTimeout(() => finish(), 760);
+            };
+            grid.classList.remove('no-motion');
+            finishAfterTransition(() => {
+                setupCharTrackIndex = destinationIndex;
+                setupCharOffset = shift.logicalOffset;
+
+                const normalizedIndex = window.InterviewCarousel.normalizeTrackIndex(
+                    setupCharTrackIndex,
+                    SETUP_CHARS.length,
+                );
+
+                if (normalizedIndex !== setupCharTrackIndex) {
+                    const normalizedCard = grid.children[normalizedIndex];
+                    grid.classList.add('no-motion');
+                    setupCharTrackIndex = normalizedIndex;
+                    grid.style.transform = `translate3d(${-normalizedCard.offsetLeft}px, 0, 0)`;
+                    void grid.offsetWidth;
+                    requestAnimationFrame(() => grid.classList.remove('no-motion'));
+                }
+                setupCharAnimating = false;
+            });
+            requestAnimationFrame(() => {
+                grid.style.transform = `translate3d(${-destinationCard.offsetLeft}px, 0, 0)`;
+            });
         };
 
-        window._suDiff = (btn, d, cls) => {
+        window._suDiff = (btn, d) => {
             if (stressMode) return;
+            setupDifficulty = d;
             state.difficulty = d;
-            btn.parentElement.querySelectorAll('.su-tgl').forEach(b => b.className = 'su-tgl');
-            btn.className = 'su-tgl ' + cls;
-            const el = document.getElementById('su-sum-diff');
-            if (el) el.textContent = d.charAt(0).toUpperCase() + d.slice(1);
+            void btn.offsetWidth;
+            syncSetupConditions([btn]);
         };
 
-        window._suDur = (btn, d, label) => {
+        window._suDur = (btn, d) => {
             if (stressMode) return;
+            setupDuration = d;
             state.duration = d;
-            btn.parentElement.querySelectorAll('.su-tgl').forEach(b => b.className = 'su-tgl');
-            btn.className = 'su-tgl on-amb';
-            const el = document.getElementById('su-sum-dur');
-            if (el) el.textContent = label;
+            void btn.offsetWidth;
+            syncSetupConditions([btn]);
         };
 
         window._suInd = (btn, id, label) => {
@@ -2348,47 +3846,75 @@ document.addEventListener('DOMContentLoaded', () => {
             if (el) el.textContent = label;
         };
 
-        window._suToggleSw = (sw) => { sw.classList.toggle('on'); };
+        window._suIndSelect = (select) => {
+            state.industry = select.value;
+            const label = select.options[select.selectedIndex]?.textContent || 'General';
+            const el = document.getElementById('su-sum-ind');
+            if (el) el.textContent = label;
+        };
+
+        window._suFocus = (value) => { state.focusNote = value; };
+
+        window._suToggleSw = (sw) => {
+            if (!sw || sw.disabled) return;
+            const enabled = !sw.classList.contains('on');
+            sw.classList.toggle('on', enabled);
+            sw.setAttribute('aria-checked', String(enabled));
+            if (sw.id === 'su-faang-sw') state.faangMode = enabled;
+            if (sw.id === 'su-int-sw') state.interruptionsEnabled = enabled;
+        };
 
         window._suToggleStress = () => {
-            stressMode = !stressMode;
-            const sw = document.getElementById('su-stress-sw');
-            const banner = document.getElementById('su-stress-banner');
-            const alert = document.getElementById('su-stress-alert');
-            const intSw = document.getElementById('su-int-sw');
-            if (sw) sw.classList.toggle('on', stressMode);
-            if (banner) banner.classList.toggle('on', stressMode);
-            if (alert) alert.classList.toggle('show', stressMode);
-            const diffBtns = document.querySelectorAll('#su-diff-grp .su-tgl');
-            const durBtns = document.querySelectorAll('#su-dur-grp .su-tgl');
-            if (stressMode) {
-                setupCharIdx = 2;
-                diffBtns.forEach(b => b.className = 'su-tgl locked');
-                diffBtns[2].className = 'su-tgl on-hard locked';
-                durBtns.forEach(b => b.className = 'su-tgl locked');
-                durBtns[2].className = 'su-tgl on-amb locked';
-                state.difficulty = 'hard'; state.duration = 'extended'; state.interruptionsEnabled = true;
-                if (intSw) { intSw.classList.add('locked-on'); intSw.classList.remove('on'); }
-                const sd = document.getElementById('su-sum-diff'); if (sd) sd.textContent = 'Hard';
-                const su = document.getElementById('su-sum-dur'); if (su) su.textContent = 'Extended (20 Qs)';
+            if (!stressMode) {
+                preStressDifficulty = setupDifficulty;
+                preStressDuration = setupDuration;
+                preStressInterruptions = Boolean(state.interruptionsEnabled);
+                stressMode = true;
+                setupDifficulty = 'hard';
+                setupDuration = 'extended';
+                state.difficulty = setupDifficulty;
+                state.duration = setupDuration;
+                state.interruptionsEnabled = true;
+                syncSetupConditions([
+                    document.querySelector('#su-diff-grp [data-value="hard"]'),
+                    document.querySelector('#su-dur-grp [data-value="extended"]'),
+                ].filter(Boolean));
             } else {
-                diffBtns.forEach(b => b.classList.remove('locked'));
-                durBtns.forEach(b => b.classList.remove('locked'));
-                if (intSw) intSw.classList.remove('locked-on');
+                stressMode = false;
+                setupDifficulty = preStressDifficulty;
+                setupDuration = preStressDuration;
+                state.difficulty = setupDifficulty || 'medium';
+                state.duration = setupDuration || 'standard';
+                state.interruptionsEnabled = preStressInterruptions;
+                syncSetupConditions();
             }
-            renderSetupChars();
         };
 
         window._suResTab = (tab, btn) => {
-            document.querySelectorAll('.su-res-tab').forEach(b => b.classList.remove('on'));
+            document.querySelectorAll('.su-res-tab').forEach(b => {
+                b.classList.remove('on');
+                b.setAttribute('aria-selected', 'false');
+                b.tabIndex = -1;
+            });
             btn.classList.add('on');
+            btn.setAttribute('aria-selected', 'true');
+            btn.tabIndex = 0;
             const u = document.getElementById('su-tab-upload');
             const p = document.getElementById('su-tab-paste');
-            if (u) u.style.display = tab === 'upload' ? 'block' : 'none';
-            if (p) p.style.display = tab === 'paste' ? 'block' : 'none';
+            if (u) u.hidden = tab !== 'upload';
+            if (p) p.hidden = tab !== 'paste';
         };
 
         window._suLaunch = async () => {
+            if (setupCharIdx < 0 || !state.interviewerPersona?.character) {
+                window._suGoStep(3);
+                return;
+            }
+            if (!setupDifficulty || !setupDuration) {
+                window._suGoStep(4);
+                syncSetupConditions();
+                return;
+            }
             if (!setupRuntime.data?.ready) {
                 setupRuntime.error = setupRuntime.data?.status_message || `Local AI is not ready. Start Ollama and install ${LOCAL_MODEL}.`;
                 renderSetupRuntime();
@@ -2401,17 +3927,36 @@ document.addEventListener('DOMContentLoaded', () => {
             state.jobDescription = document.getElementById('su-jd')?.value || '';
             const pasteResume = document.getElementById('su-resume-text')?.value || '';
             if (pasteResume) state.resumeText = pasteResume;
-            state.faangMode = document.getElementById('su-faang-sw')?.classList.contains('on') || false;
-            state.interruptionsEnabled = document.getElementById('su-int-sw')?.classList.contains('on') || document.getElementById('su-int-sw')?.classList.contains('locked-on') || false;
+            state.faangMode = document.getElementById('su-faang-sw')?.getAttribute('aria-checked') === 'true';
+            state.interruptionsEnabled = document.getElementById('su-int-sw')?.getAttribute('aria-checked') === 'true';
+            state.difficulty = setupDifficulty;
+            state.duration = setupDuration;
+            state.practiceFocus = null;
+            setupDraft = null;
             // Track industries used
-            const used = JSON.parse(localStorage.getItem('ai_coach_industries_used') || '[]');
-            if (!used.includes(state.industry)) { used.push(state.industry); localStorage.setItem('ai_coach_industries_used', JSON.stringify(used)); }
-            if (state.faangMode) { localStorage.setItem('ai_coach_faang_sessions', JSON.stringify((JSON.parse(localStorage.getItem('ai_coach_faang_sessions') || '0')) + 1)); }
+            const used = readStoredJSON('ai_coach_industries_used', []);
+            if (!used.includes(state.industry)) { used.push(state.industry); persistLocalValue('ai_coach_industries_used', JSON.stringify(used)); }
+            if (state.faangMode) { persistLocalValue('ai_coach_faang_sessions', JSON.stringify(Number(readStoredJSON('ai_coach_faang_sessions', 0)) + 1)); }
+            fetch('/api/preferences', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ setup_completed: true }),
+            }).catch(() => null);
             navigate('session');
         };
+
+        // Restore an in-progress briefing after AI Models without replaying any
+        // selection animation. Fresh briefings remain on Step 1 with Step 4
+        // intentionally undecided.
+        syncSetupConditions();
+        window._suGoStep(setupStep);
     }
 
     function renderSession() {
+        const resumedSession = state.pendingSessionResume;
+        const isResuming = Boolean(resumedSession && hydrateSessionRecord(resumedSession));
+        state.pendingSessionResume = null;
+
         // --- Derive dynamic session info ---
         const SETUP_CHARS = {
             female: [
@@ -2420,9 +3965,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 { id: 'executive', name: 'Diana' }, { id: 'peer', name: 'Jess' }
             ],
             male: [
-                { id: 'strict', name: 'Marcus' }, { id: 'friendly', name: 'James' },
+                { id: 'strict', name: 'Victor' }, { id: 'friendly', name: 'James' },
                 { id: 'stress', name: 'Tyler' }, { id: 'calm', name: 'Nathan' },
-                { id: 'executive', name: 'Richard' }, { id: 'peer', name: 'Alex' }
+                { id: 'executive', name: 'Marcus' }, { id: 'peer', name: 'Alex' }
             ]
         };
         const MOD_COLORS = {
@@ -2443,15 +3988,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const charList = SETUP_CHARS[state.interviewerPersona?.gender || 'female'];
         const charData = charList.find(c => c.id === state.interviewerPersona?.character) || charList[1];
         const charInitial = charData.name.charAt(0);
-        const charName = charData.name;
-        const charRole = characters.find(c => c.id === state.interviewerPersona?.character)?.label || 'Interviewer';
+        const charName = state.interviewerPersona?.name || charData.name;
+        const charRole = state.interviewerPersona?.role || characters.find(c => c.id === state.interviewerPersona?.character)?.label || 'Interviewer';
         const modLabel = mod.label;
         const modIcon = mod.icon;
         const mc = mod.color; // e.g. "168,85,247"
         const mh = mod.hex;   // e.g. "#a855f7"
-        const portraitSrc = state.interviewerPersona?.gender === 'male'
-            ? '/static/assets/interviewers/interviewer-male.png'
-            : '/static/assets/interviewers/interviewer-female.png';
+        const focusKeys = Array.isArray(state.practiceFocus?.focus_keys) ? state.practiceFocus.focus_keys : [];
+        const isFocusedRehearsal = focusKeys.length > 0;
+        const focusLabel = focusKeys
+            .map(key => String(key).replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase()))
+            .join(' · ');
+        const portraitSrc = state.interviewerPersona?.image || (
+            state.interviewerPersona?.character === 'calm'
+                ? '/static/assets/interviewers/interviewer-maya.webp'
+                : state.interviewerPersona?.gender === 'male'
+                    ? '/static/assets/interviewers/interviewer-male.webp'
+                    : '/static/assets/interviewers/interviewer-female-studio-v2.webp'
+        );
 
         const sessionCSS = `
         <style>
@@ -2474,6 +4028,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .ss-hdr-name span{font-weight:500;color:var(--t-muted);font-size:11px}
         .ss-hdr-role{font-size:11px;color:var(--t-muted)}
         .ss-mod-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:99px;border:1px solid rgba(${mc},.3);background:rgba(${mc},.08);color:${mh};font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+        .studio-session__focus{display:inline-flex;align-items:center;padding:3px 8px;margin-left:8px;border:1px solid rgba(165,61,39,.35);background:rgba(165,61,39,.08);color:#a53d27;font:700 9px/1 'Inter',sans-serif;letter-spacing:.09em;text-transform:uppercase}
         .ss-hdr-right{display:flex;align-items:center;gap:8px}
         .ss-ctrl{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.13);background:var(--t-surface);color:var(--t-muted);font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;font-family:inherit}
         .ss-ctrl:hover{background:var(--t-border);color:var(--t-fg)}
@@ -2606,19 +4161,15 @@ document.addEventListener('DOMContentLoaded', () => {
         <main class="studio-ui studio-session">
             <header class="studio-session__header">
                 <div class="studio-session__brand">
-                    <button class="studio-icon-button" onclick="window.nav('setup')" title="Back to setup" aria-label="Back to setup">${ti('arrow-left')}</button>
-                    <div class="studio-session__brand-copy">
-                        <h1 class="studio-session__title">The Interview Room</h1>
-                        <span class="studio-session__divider" aria-hidden="true"></span>
-                        <span class="studio-session__module">${escapeHTML(modLabel)} · ${escapeHTML(state.targetRole || 'General Candidate')}</span>
-                    </div>
+                    <button class="studio-session__brand-home" onclick="window.nav('setup')" title="Return to setup" aria-label="Return to setup">
+                        <img src="/static/assets/brand/interview-chameleon-mark.png" alt=""><span class="studio-session__wordmark"><span>Interview</span><span>Chameleon</span></span>
+                    </button>
+                    <span class="studio-session__divider" aria-hidden="true"></span>
+                    <span class="studio-session__module">The interview room <b>/</b> ${escapeHTML(modLabel)} rehearsal${isFocusedRehearsal ? `<span class="studio-session__focus" title="${escapeHTML(focusLabel)}">Focused follow-up</span>` : ''}</span>
                 </div>
                 <div class="studio-session__controls">
-                    <span class="studio-session__live">Live rehearsal</span>
+                    <span class="studio-session__live">Live</span>
                     <span class="studio-session__divider" aria-hidden="true"></span>
-                    <button class="studio-paper-button is-on" id="voice-toggle">${ti('volume')} <span class="studio-control-copy">Voice on</span></button>
-                    <button class="studio-paper-button" id="mirror-toggle">${ti('eye-off')} <span class="studio-control-copy">Mirror off</span></button>
-                    <div class="studio-session__counter" id="q-counter">Q <span>0</span> / ?</div>
                     <div class="studio-session__timer" id="session-timer">0:00</div>
                     <span id="response-timer" hidden>0:00</span>
                     <button class="studio-danger-button" id="end-session-btn">${ti('player-stop')} <span class="studio-control-copy">End session</span></button>
@@ -2627,24 +4178,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
             <div class="studio-session__body">
                 <section class="studio-stage" aria-label="Interviewer stage">
+                    <span class="studio-stage__corner-label">${isFocusedRehearsal ? 'Adaptive practice · Local AI' : 'Private · Local AI'}</span>
                     <div class="studio-stage__portrait" id="char-avatar" data-state="idle">
                         <img src="${portraitSrc}" alt="${escapeHTML(charName)}, your interviewer">
                     </div>
-                    <div class="studio-stage__corner-label">Private · Local AI</div>
                     <div class="studio-stage__details">
                         <h2 class="studio-stage__name">${escapeHTML(charName)}</h2>
-                        <p class="studio-stage__role">${escapeHTML(charRole)} interviewer · ${escapeHTML(state.targetRole || 'Interview rehearsal')}</p>
-                        <div class="studio-stage__status-row">
-                            <span class="studio-stage__state" id="interviewer-state-label">Ready</span>
-                            <div class="studio-stage__audio-actions" id="interviewer-audio-actions" aria-live="polite"></div>
-                        </div>
+                        <p class="studio-stage__role"><span aria-hidden="true"></span>${escapeHTML(charRole)} interviewer</p>
+                    </div>
+                    <div class="studio-stage__activity">
+                        <span class="studio-stage__state" id="interviewer-state-label">Ready</span>
+                        <div class="studio-stage__audio-actions" id="interviewer-audio-actions" aria-live="polite"></div>
+                    </div>
+                    <div class="studio-stage__dock" aria-label="Session controls">
+                        <button class="studio-paper-button studio-dock-button" id="mirror-toggle" title="Toggle your camera preview">${ti('camera')} <span class="studio-control-copy">Camera</span></button>
+                        <button class="studio-paper-button studio-dock-button is-on" id="voice-toggle" title="Toggle interviewer voice">${ti('microphone')} <span class="studio-control-copy">Voice on</span></button>
+                        <button class="studio-dock-button" type="button" onclick="window.nav('setup')" title="Session settings">${ti('settings')} <span class="studio-control-copy">Settings</span></button>
+                        <button class="studio-dock-button studio-dock-button--end" type="button" onclick="document.getElementById('end-session-btn')?.click()" title="End session">${ti('phone-off')} <span class="studio-control-copy">End</span></button>
                     </div>
                 </section>
 
                 <section class="studio-workspace" aria-label="Interview workspace">
                     <div class="studio-question">
                         <div class="studio-question__topline">
-                            <span class="studio-kicker" id="current-question-label">Current question</span>
+                            <div class="studio-question__index"><span class="studio-kicker" id="current-question-label">Question</span><span class="studio-session__counter" id="q-counter">00 / 10</span></div>
                             <span class="studio-question__timer">Answer window · <strong id="resp-timer-display">0:00</strong></span>
                         </div>
                         <div class="studio-question__text is-thinking" id="current-question" aria-live="polite">Preparing your first question…</div>
@@ -2655,21 +4212,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     <div class="studio-response">
                         <div class="studio-response__heading">
-                            <span class="studio-kicker">Your response</span>
+                            <div class="studio-response__tabs" role="tablist" aria-label="Rehearsal workspace">
+                                <button class="is-active" id="session-tab-response" type="button" role="tab" aria-selected="true" aria-controls="response-panel" tabindex="0" data-session-tab="response">Response</button>
+                                <button id="session-tab-transcript" type="button" role="tab" aria-selected="false" aria-controls="chat-area" tabindex="-1" data-session-tab="transcript">Transcript</button>
+                            </div>
                             <span class="studio-response__timing" id="resp-hint">Average response · <span id="avg-resp-display">—</span></span>
                         </div>
-                        <div class="studio-response__composer">
-                            <button class="studio-response__mic" id="mic-btn" title="Voice input" aria-label="Start voice input">${ti('microphone')}<span class="ss-mic-ping"></span></button>
-                            <textarea class="studio-response__textarea" id="chat-input" placeholder="Answer naturally. Your notes stay on this machine." rows="2"></textarea>
-                            <button class="studio-response__send" id="chat-send" title="Send response" aria-label="Send response">${ti('arrow-up')}</button>
-                        </div>
-                        <div class="studio-response__footer">
-                            <span>Enter to send · Shift + Enter for a new line</span>
-                            <span class="studio-response__wordcount" id="live-wc"></span>
+                        <div id="response-panel" role="tabpanel" aria-labelledby="session-tab-response">
+                            <div class="studio-response__composer">
+                                <button class="studio-response__mic" id="mic-btn" title="Voice input" aria-label="Start voice input">${ti('microphone')}<span class="ss-mic-ping"></span></button>
+                                <span class="studio-response__mic-copy"><strong>Hold to speak</strong><span>or type your answer</span></span>
+                                <label class="sr-only" for="chat-input">Your interview response</label>
+                                <textarea class="studio-response__textarea" id="chat-input" placeholder="Type your answer here…" rows="2"></textarea>
+                                <button class="studio-response__send" id="chat-send" title="Send response" aria-label="Send response">${ti('arrow-up')}</button>
+                            </div>
+                            <div class="studio-response__footer">
+                                <span>Enter to send · Shift + Enter for a new line</span>
+                                <span class="studio-response__wordcount" id="live-wc"></span>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="studio-transcript" id="chat-area">
+                    <div class="studio-transcript" id="chat-area" role="tabpanel" aria-labelledby="session-tab-transcript" hidden>
                         <div class="studio-transcript__header">
                             <span class="studio-rule-label studio-kicker">Session record</span>
                             <span class="studio-transcript__count" id="transcript-count">No exchanges yet</span>
@@ -2679,35 +4243,62 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                 </section>
-            </div>
 
-            <aside class="studio-coach" aria-label="Live coaching notes">
-                <div class="studio-coach__intro">
-                    <span class="studio-kicker">Live coach</span>
-                    <span class="studio-coach__note" id="coach-note">Settle in. Answer the question you were asked.</span>
-                </div>
-                <div class="studio-coach__metric">
-                    <span class="studio-coach__metric-label">Response pace</span>
-                    <span class="studio-coach__metric-value" id="coach-pace">Waiting</span>
-                </div>
-                <div class="studio-coach__metric">
-                    <span class="studio-coach__metric-label">Specificity</span>
-                    <span class="studio-coach__metric-value" id="coach-specificity">Not enough text</span>
-                </div>
-                <div class="studio-coach__metric">
-                    <span class="studio-coach__metric-label">Structure</span>
-                    <span class="studio-coach__metric-value" id="coach-structure">Forming</span>
-                </div>
-                <div class="studio-coach__metric">
-                    <span class="studio-coach__metric-label">Presence</span>
-                    <span class="studio-coach__metric-value" id="coach-presence">Camera optional</span>
-                </div>
-            </aside>
+                <aside class="studio-coach" aria-label="Live coaching notes">
+                    <div class="studio-coach__heading">
+                        <span class="studio-kicker">Coach's margin</span>
+                        <span>Live notes</span>
+                    </div>
+                    <div class="studio-coach__metric">
+                        <span class="studio-coach__icon">${ti('gauge')}</span>
+                        <span class="studio-coach__copy"><span class="studio-coach__metric-label">Pace</span><span class="studio-coach__metric-value" id="coach-pace">Waiting</span></span>
+                    </div>
+                    <div class="studio-coach__metric">
+                        <span class="studio-coach__icon is-caution">${ti('alert-triangle')}</span>
+                        <span class="studio-coach__copy"><span class="studio-coach__metric-label">Specificity</span><span class="studio-coach__metric-value" id="coach-specificity">Not enough text</span></span>
+                    </div>
+                    <div class="studio-coach__metric">
+                        <span class="studio-coach__icon">${ti('star')}</span>
+                        <span class="studio-coach__copy"><span class="studio-coach__metric-label">Structure</span><span class="studio-coach__metric-value" id="coach-structure">Forming</span></span>
+                    </div>
+                    <div class="studio-coach__intro">
+                        <span class="studio-kicker">Coach's note</span>
+                        <span class="studio-coach__note" id="coach-note">${isFocusedRehearsal ? `Priority from your last report: ${escapeHTML(focusLabel)}.` : 'Settle in. Answer the question you were asked.'}</span>
+                    </div>
+                </aside>
+            </div>
         </main>`;
 
         const chatInput = document.getElementById('chat-input');
         const sendBtn = document.getElementById('chat-send');
         const chatHistoryBlock = document.getElementById('chat-history');
+        const sessionTabs = [...document.querySelectorAll('[data-session-tab]')];
+        const activateSessionTab = (tab, { moveFocus = false } = {}) => {
+            sessionTabs.forEach(item => {
+                const active = item === tab;
+                item.classList.toggle('is-active', active);
+                item.setAttribute('aria-selected', String(active));
+                item.tabIndex = active ? 0 : -1;
+            });
+            const showResponse = tab.dataset.sessionTab === 'response';
+            document.getElementById('response-panel').hidden = !showResponse;
+            document.getElementById('chat-area').hidden = showResponse;
+            if (moveFocus) tab.focus({ preventScroll: true });
+            if (showResponse) window.requestAnimationFrame(() => chatInput?.focus({ preventScroll: true }));
+        };
+        sessionTabs.forEach((tab, index) => {
+            tab.addEventListener('click', () => activateSessionTab(tab));
+            tab.addEventListener('keydown', event => {
+                let nextIndex = null;
+                if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % sessionTabs.length;
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + sessionTabs.length) % sessionTabs.length;
+                if (event.key === 'Home') nextIndex = 0;
+                if (event.key === 'End') nextIndex = sessionTabs.length - 1;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                activateSessionTab(sessionTabs[nextIndex], { moveFocus: true });
+            });
+        });
         const interviewerVisual = window.InterviewerVisual?.create({
             rootId: 'char-avatar',
             labelId: 'interviewer-state-label',
@@ -2804,48 +4395,62 @@ document.addEventListener('DOMContentLoaded', () => {
             function dragEnd() { isDragging = false; }
         }
 
-        state.chatHistory = [];
-        state.currentSessionId = crypto.randomUUID();
-        state.voiceMode = true;
+        if (!isResuming) {
+            state.chatHistory = [];
+            state.currentSessionId = crypto.randomUUID();
+            state.currentSessionRecord = null;
+            state.interviewPlan = null;
+            state.roleIntelligence = null;
+            state.sessionStatus = 'in_progress';
+            state.sessionStartedAtISO = new Date().toISOString();
+            state.sessionClockStartedAt = Date.now();
+            state.voiceMode = true;
+        } else {
+            state.sessionClockStartedAt = Date.now() - Math.max(0, Number(resumedSession.duration_seconds || 0)) * 1000;
+        }
         state.isRecording = false;
         state.currentAudio = null;
 
-        let sessionStartTime = Date.now();
+        let sessionStartTime = state.sessionClockStartedAt || Date.now();
         let lastResponseTime = Date.now();
         let lastActivityTime = Date.now();
         let nudgeSent = false;
         let isAITalking = false;
         let sessionBlocked = false;
-        let aiTurnCount = 0;
-        let curveballFired = false;
+        let sessionComplete = state.chatHistory.some(message => message.isClosing);
         let nextInterruptAt = null;
+        let interruptionCount = 0;
         let userResponseTimes = []; // Track response times for avg display
 
         const INTERRUPT_LINES = {
             strict: ["Let me stop you there - give me the short version.", "I'll need you to cut to the point.", "Skip ahead - what's the key takeaway?"],
             friendly: ["Sorry to jump in! Can you give me the gist of that?", "Oh, before you finish - what's the main point?", "Quick check-in - can you summarise that?"],
             stress: ["Stop. What's the bottom line?", "I'm going to cut you off - key point, now.", "Wrap it up in one sentence."],
-            analytical: ["Pause - what's the core assumption you're making?", "Hold on, let's zoom out - what's the crux here?", "Let me interject - what evidence supports that?"],
-            panel: ["I'll interject - other panellists may have questions. Quick summary?", "Let's pause you there. What's the headline?", "I need to flag something - can you abbreviate?"],
+            calm: ["Pause - what's the core assumption you're making?", "Hold on, let's zoom out - what's the crux here?", "Let me interject - what evidence supports that?"],
+            executive: ["I'll interject - other panellists may have questions. Quick summary?", "Let's pause you there. What's the headline?", "I need to flag something - can you abbreviate?"],
             peer: ["Oh wait, actually - what's the TL;DR on that?", "Ha, sorry - can you give me the quick version?", "Hold that thought - just the highlight?"]
         };
 
         const difficultyLimits = { easy: 60, medium: 120, hard: 180 };
         const turnLimit = difficultyLimits[state.difficulty] || 120;
+        const interruptionBudget = { quick: 1, standard: 2, extended: 4 }[state.duration] || 2;
+        const interruptionDelays = [48, 67, 82, 56];
 
         function scheduleNextInterruption() {
-            if (!state.interruptionsEnabled) return;
-            const delay = (30 + Math.random() * 60) * 1000;
-            nextInterruptAt = Date.now() + delay;
+            if (!state.interruptionsEnabled || sessionComplete || interruptionCount >= interruptionBudget) {
+                nextInterruptAt = null;
+                return;
+            }
+            const delaySeconds = interruptionDelays[interruptionCount % interruptionDelays.length];
+            nextInterruptAt = Date.now() + delaySeconds * 1000;
         }
-        scheduleNextInterruption();
 
         // --- Q counter helpers ---
         const totalQs = { quick: 5, standard: 10, extended: 20 }[state.duration] || 10;
         function updateQCounter() {
-            const aiMsgs = state.chatHistory.filter(m => m.role === 'assistant' && !m.isNudge && !m.isTyping && !m.isInterruption && !m.isSystemError).length;
+            const aiMsgs = state.chatHistory.filter(m => m.role === 'assistant' && !m.isNudge && !m.isTyping && !m.isInterruption && !m.isSystemError && !m.isClosing).length;
             const el = document.getElementById('q-counter');
-            if (el) el.innerHTML = `Q <span>${aiMsgs}</span> / ${totalQs}`;
+            if (el) el.innerHTML = `${String(aiMsgs).padStart(2, '0')} <span>/ ${String(totalQs).padStart(2, '0')}</span>`;
         }
 
         // --- Timers ---
@@ -2960,7 +4565,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Update timer bar
             const timerBar = document.getElementById('answer-timer-bar');
-            if (timerBar && !isAITalking && !sessionBlocked) {
+            if (timerBar && !isAITalking && !sessionBlocked && !sessionComplete) {
                 const remainingSeconds = Math.max(turnLimit - responseSeconds, 0);
                 const percentage = (remainingSeconds / turnLimit) * 100;
                 timerBar.style.width = `${percentage}%`;
@@ -2975,7 +4580,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // Silence Detection (60s)
                 if (inactivitySeconds > 60 && !nudgeSent && remainingSeconds > 5) {
-                    const nudgeChar = characters.find(c => c.id === state.interviewerPersona.character) || characters[1];
+                    const nudgeChar = characters.find(c => c.id === state.interviewerPersona?.character) || characters[1];
                     state.chatHistory.push({ role: 'assistant', content: nudgeChar.nudge, isNudge: true, timestamp: Date.now() });
                     triggerAIResponse(true, nudgeChar.nudge);
                 }
@@ -2983,10 +4588,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Interruption Simulation
                 if (state.interruptionsEnabled && nextInterruptAt && now >= nextInterruptAt && !isAITalking) {
                     nextInterruptAt = null;
-                    const charId = state.interviewerPersona.character;
+                    const charId = state.interviewerPersona?.character || 'friendly';
                     const lines = INTERRUPT_LINES[charId] || INTERRUPT_LINES['friendly'];
-                    const line = lines[Math.floor(Math.random() * lines.length)];
+                    const line = lines[interruptionCount % lines.length];
+                    interruptionCount += 1;
                     state.chatHistory.push({ role: 'assistant', content: line, isInterruption: true, timestamp: Date.now() });
+                    queueSessionCheckpoint();
                     updateChatView();
                     handleTTS(line, true);
                 }
@@ -3001,9 +4608,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         isTimeout: true,
                         timestamp: Date.now()
                     });
+                    queueSessionCheckpoint();
                     triggerAIResponse(false);
                 }
-            } else if (timerBar && (isAITalking || sessionBlocked)) {
+            } else if (timerBar && (isAITalking || sessionBlocked || sessionComplete)) {
                 timerBar.style.width = '100%';
                 timerBar.className = 'studio-question__progress-fill green';
             }
@@ -3090,20 +4698,67 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Chat Rendering ---
         async function streamChat(model, messages, systemPrompt, onUpdate, onComplete) {
             try {
-                const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages, system_prompt: systemPrompt }) });
-                const reader = res.body.getReader();
-                const decoder = new TextDecoder();
-                let fullText = "";
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    fullText += decoder.decode(value, { stream: true });
-                    onUpdate(fullText);
+                const lastAnswer = [...messages].reverse().find(message => message.role === 'user');
+                const useDurableTurn = Boolean(
+                    state.currentSessionId
+                    && state.currentSessionRecord?.revision
+                    && lastAnswer?.turnId
+                );
+                const url = useDurableTurn
+                    ? `/api/sessions/${encodeURIComponent(state.currentSessionId)}/turns`
+                    : '/api/interview/turn';
+                const requestBody = useDurableTurn ? {
+                    turn_id: lastAnswer.turnId,
+                    answer: lastAnswer.content,
+                    expected_revision: state.currentSessionRecord.revision,
+                } : {
+                    model,
+                    messages,
+                    target_role: state.targetRole || 'professional role',
+                    module: state.selectedModule || 'general',
+                    difficulty: state.difficulty || 'medium',
+                    duration: state.duration || 'standard',
+                    industry: state.industry || 'general',
+                    interviewer_style: state.interviewerPersona?.character || 'friendly',
+                    faang_mode: Boolean(state.faangMode),
+                    interruptions_enabled: Boolean(state.interruptionsEnabled),
+                    job_description: state.jobDescription || '',
+                    resume_text: state.resumeText || '',
+                    focus_context: state.practiceFocus || null
+                };
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error?.message || data.detail || `Interview request failed (${res.status})`);
+                const turn = useDurableTurn ? (data.turn || {}) : data;
+                if (useDurableTurn) {
+                    state.currentSessionRecord = {
+                        ...(state.currentSessionRecord || {}),
+                        revision: data.revision,
+                    };
+                    turn.durable = true;
                 }
-                onComplete(fullText);
-            } catch (e) { onComplete("Local AI connection failed. Start Ollama and confirm qwen2.5:7b is installed, then retry."); }
+                const fullText = turn.text || '';
+                onUpdate(fullText);
+                onComplete(fullText, turn);
+            } catch (e) {
+                onComplete(`Error connecting to Ollama: ${e.message || 'request failed'}`, { error: true });
+            }
         }
 
+        function stageQuestionCopy(content) {
+            const normalized = (content || '').replace(/\[TIMEOUT\]/gi, '').replace(/\s+/g, ' ').trim();
+            if (normalized.length <= 140) return normalized;
+            const sentences = normalized.match(/[^.!?]+(?:[.!?]+|$)/g) || [normalized];
+            return sentences.length > 2
+                ? sentences.slice(-2).map(sentence => sentence.trim()).join(' ')
+                : normalized;
+        }
+
+        const filedEntryKeys = new Set();
         function updateChatView() {
             if (state.chatHistory.length === 0) return;
             const currentQuestionEl = document.getElementById('current-question');
@@ -3116,17 +4771,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (currentQuestionEl && latestAI) {
                 const waitingForCopy = latestAI.isTyping && (!latestAI.content || latestAI.content === '...');
-                currentQuestionEl.textContent = waitingForCopy ? 'Preparing the next question…' : latestAI.content;
+                const displayCopy = latestAI.isSystemError ? latestAI.content : stageQuestionCopy(latestAI.content);
+                currentQuestionEl.textContent = waitingForCopy ? 'Preparing the next question…' : displayCopy;
                 currentQuestionEl.classList.toggle('is-thinking', waitingForCopy);
                 currentQuestionEl.classList.toggle('is-error', !!latestAI.isSystemError);
+                currentQuestionEl.classList.toggle('is-long', !waitingForCopy && !latestAI.isSystemError && displayCopy.length > 110);
                 if (currentQuestionLabel) {
                     currentQuestionLabel.textContent = latestAI.isSystemError
                         ? 'Local AI needs attention'
+                        : latestAI.isClosing
+                        ? 'Rehearsal complete'
                         : latestAI.isCurveball
                         ? 'Curveball question'
+                        : latestAI.isFollowUp
+                        ? 'Follow-up question'
+                        : latestAI.isAdaptiveFocus
+                        ? 'Focused practice question'
                         : latestAI.isInterruption
                             ? 'Interviewer interruption'
-                            : 'Current question';
+                            : 'Question';
                 }
             }
 
@@ -3138,17 +4801,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     : 'No exchanges yet';
             }
 
-            chatHistoryBlock.innerHTML = filedMessages.length ? filedMessages.map(msg => {
+            chatHistoryBlock.innerHTML = filedMessages.length ? filedMessages.map((msg, index) => {
                 const isAI = msg.role === 'assistant';
                 const isInterrupt = !!msg.isInterruption;
                 const isCurveball = !!msg.isCurveball;
+                const isFollowUp = !!msg.isFollowUp;
+                const isAdaptiveFocus = !!msg.isAdaptiveFocus;
+                const isClosing = !!msg.isClosing;
                 const contentHTML = escapeHTML(msg.content || '');
                 const words = isAI ? 0 : (msg.content || '').split(/\s+/).filter(Boolean).length;
                 const note = isAI
-                    ? [isCurveball ? 'Curveball' : '', isInterrupt ? 'Interruption' : ''].filter(Boolean).join(' · ')
+                    ? [isCurveball ? 'Curveball' : '', isFollowUp ? 'Follow-up' : '', isAdaptiveFocus ? 'Focused practice' : '', isInterrupt ? 'Interruption' : '', isClosing ? 'Session close' : ''].filter(Boolean).join(' · ')
                     : `${words} words`;
 
-                return `<article class="studio-transcript-entry ${isAI ? 'studio-transcript-entry--question' : 'studio-transcript-entry--response'}">
+                const entryKey = `${msg.role}-${msg.timestamp || index}`;
+                const isNewEntry = !filedEntryKeys.has(entryKey);
+                filedEntryKeys.add(entryKey);
+
+                return `<article class="studio-transcript-entry ${isAI ? 'studio-transcript-entry--question' : 'studio-transcript-entry--response'}${isNewEntry ? ' is-new' : ''}">
                     <div class="studio-transcript-entry__label">${isAI ? escapeHTML(charName) : 'Your response'}</div>
                     <div>
                         <div class="studio-transcript-entry__copy">${contentHTML}</div>
@@ -3166,37 +4836,53 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         async function triggerAIResponse(isNudge = false, nudgeText = "") {
+            if (sessionComplete && !isNudge) return;
             isAITalking = true;
             if (isNudge) { await handleTTS(nudgeText, true); return; }
 
-            aiTurnCount++;
-            let curveballActive = false;
-            if (!curveballFired && aiTurnCount >= 5 && ['standard', 'extended'].includes(state.duration)) {
-                if (Math.random() < 0.25) { curveballFired = true; curveballActive = true; }
-            }
-
-            state.chatHistory.push({ role: 'assistant', content: '...', isTyping: true, isCurveball: curveballActive, timestamp: Date.now() });
+            state.chatHistory.push({ role: 'assistant', content: '...', isTyping: true, timestamp: Date.now() });
             updateChatView();
             const typingIndex = state.chatHistory.length - 1;
 
-            let sysPrompt = buildSystemPrompt();
-            if (curveballActive) {
-                sysPrompt += '\n\n[CURVEBALL] Ask ONE deliberately out-of-depth, expert-level question that would challenge even a seasoned senior professional off-the-cuff. This tests how the candidate handles uncertainty. Do NOT warn them - just ask it naturally as the next question.';
-            }
-
-            const messagesToSend = state.chatHistory.filter(m => !m.isTyping && !m.isNudge).map(m => ({ role: m.role, content: m.content }));
+            const sysPrompt = buildSystemPrompt();
+            const messagesToSend = state.chatHistory
+                .filter(m => !m.isTyping && !m.isNudge)
+                .map(m => ({
+                    role: m.role,
+                    content: m.content,
+                    turnId: m.turnId || '',
+                    isTimeout: Boolean(m.isTimeout),
+                    isHidden: Boolean(m.isHidden),
+                    isInterruption: Boolean(m.isInterruption),
+                    isCurveball: Boolean(m.isCurveball),
+                    isFollowUp: Boolean(m.isFollowUp),
+                    isAdaptiveFocus: Boolean(m.isAdaptiveFocus),
+                    isClosing: Boolean(m.isClosing),
+                    isSystemError: Boolean(m.isSystemError),
+                    questionText: m.questionText || '',
+                    orchestration: m.orchestration || null
+                }));
 
             await streamChat(state.selectedModel, messagesToSend, sysPrompt,
                 (chunk) => { state.chatHistory[typingIndex].content = chunk; updateChatView(); },
-                async (finalText) => {
-                    const aiFailed = /^Error connecting to Ollama:/i.test(finalText) || /^Error:\s/i.test(finalText);
+                async (finalText, turnData = {}) => {
+                    sendBtn.classList.remove('is-sending');
+                    const aiFailed = Boolean(turnData.error) || /^Error connecting to Ollama:/i.test(finalText) || /^Error:\s/i.test(finalText);
                     const displayText = aiFailed
-                        ? 'Ollama is open, but qwen2.5:7b is not accepting chat requests. Return to Setup after reloading or reinstalling the model.'
+                        ? `Ollama is open, but ${selectedModelName()} is not accepting chat requests. Open AI Models after reloading or reinstalling the model.`
                         : finalText;
+                    const orchestration = turnData.orchestration || {};
                     state.chatHistory[typingIndex].isTyping = false;
                     state.chatHistory[typingIndex].content = displayText;
                     state.chatHistory[typingIndex].isSystemError = aiFailed;
+                    state.chatHistory[typingIndex].questionText = turnData.question || '';
+                    state.chatHistory[typingIndex].orchestration = orchestration;
+                    state.chatHistory[typingIndex].isCurveball = orchestration.turn_type === 'curveball';
+                    state.chatHistory[typingIndex].isFollowUp = orchestration.turn_type === 'follow_up';
+                    state.chatHistory[typingIndex].isAdaptiveFocus = Boolean(orchestration.adaptive_focus);
+                    state.chatHistory[typingIndex].isClosing = Boolean(turnData.complete);
                     state.chatHistory[typingIndex].timestamp = Date.now();
+                    if (!turnData.durable) queueSessionCheckpoint();
                     updateChatView();
                     if (aiFailed) {
                         sessionBlocked = true;
@@ -3211,7 +4897,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateLiveCoaching(0);
                         return;
                     }
-                    scheduleNextInterruption();
+                    if (turnData.complete) {
+                        sessionComplete = true;
+                        nextInterruptAt = null;
+                        chatInput.disabled = true;
+                        chatInput.placeholder = 'Rehearsal complete — get your report when ready.';
+                        sendBtn.disabled = true;
+                        document.getElementById('mic-btn').disabled = true;
+                        const stateLabel = document.getElementById('interviewer-state-label');
+                        if (stateLabel) stateLabel.textContent = 'Rehearsal complete';
+                        const endButton = document.getElementById('end-session-btn');
+                        if (endButton) endButton.innerHTML = `${ti('chart-bar')} Get my report`;
+                    } else {
+                        scheduleNextInterruption();
+                    }
                     await handleTTS(displayText, false);
                 }
             );
@@ -3219,19 +4918,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- TTS with Speaking Visualizer ---
         async function handleTTS(text, isNudge) {
+            const markAnswerReady = () => {
+                if (isNudge) return;
+                const latestQuestion = [...state.chatHistory].reverse().find(m => m.role === 'assistant' && !m.isTyping && !m.isSystemError && !m.isNudge && !m.isClosing);
+                if (latestQuestion) latestQuestion.answerReadyTimestamp = Date.now();
+            };
             if (state.voiceMode) {
                 try {
-                    const res = await fetch('/api/tts', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: text, gender: state.interviewerPersona.gender })
-                    });
-                    const data = await res.json();
-
-                    if (state.currentAudio) Object.assign(state.currentAudio, { onended: null }).pause();
-                    state.currentAudio = new Audio(data.audio_url);
-
-                    // Add speaking ring + visualizer when audio starts
                     const onSpeakStart = () => {
                         interviewerVisual?.setState('speaking');
                         const audioActions = document.getElementById('interviewer-audio-actions');
@@ -3246,27 +4939,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     };
 
                     const onSpeakEnd = () => {
+                        state.currentAudio = null;
                         interviewerVisual?.setState('idle');
                         // Remove visualizer
                         document.querySelectorAll('.ss-visualizer').forEach(v => v.remove());
                         document.querySelectorAll('.ss-skip-btn').forEach(b => b.remove());
                         if (!isNudge) {
+                            markAnswerReady();
                             isAITalking = false;
                             lastResponseTime = Date.now();
                             lastActivityTime = Date.now();
                         }
                     };
 
-                    state.currentAudio.onplay = onSpeakStart;
-                    state.currentAudio.onended = onSpeakEnd;
-                    await state.currentAudio.play().catch(e => {
-                        console.error('Play error', e);
+                    state.currentAudio = window.LocalSpeech?.speak(text, {
+                        gender: state.interviewerPersona?.gender || 'female',
+                        preferredVoice: state.preferredVoice || '',
+                        onStart: onSpeakStart,
+                        onEnd: onSpeakEnd,
+                    }) || null;
+                    if (!state.currentAudio) {
+                        console.info('No local speech voice is available; continuing in text-only mode.');
                         onSpeakEnd();
-                    });
+                    }
                 } catch (e) {
-                    console.error('TTS error', e);
+                    console.error('Local speech error', e);
                     interviewerVisual?.setState('idle');
                     if (!isNudge) {
+                        markAnswerReady();
                         isAITalking = false;
                         lastResponseTime = Date.now();
                         lastActivityTime = Date.now();
@@ -3275,6 +4975,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 interviewerVisual?.setState('idle');
                 if (!isNudge) {
+                    markAnswerReady();
                     isAITalking = false;
                     lastResponseTime = Date.now();
                     lastActivityTime = Date.now();
@@ -3286,18 +4987,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 nudgeSent = true;
             } else {
                 nudgeSent = false;
-                fetch('/api/sessions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        id: state.currentSessionId,
-                        date: new Date().toISOString(),
-                        target_role: state.targetRole,
-                        module: state.selectedModule,
-                        duration_seconds: Math.floor((Date.now() - sessionStartTime) / 1000),
-                        messages: state.chatHistory
-                    })
-                }).finally(() => state.sessionHistoryCache = null);
+                queueSessionCheckpoint();
             }
         }
 
@@ -3316,7 +5006,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- Handle Send ---
         const handleSend = () => {
-            if (sessionBlocked) return;
+            if (sessionBlocked || sessionComplete) return;
             const text = chatInput.value.trim();
             if (!text) return;
 
@@ -3334,7 +5024,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             chatInput.value = '';
             liveWcEl.textContent = '';
-            state.chatHistory.push({ role: 'user', content: text, timestamp: Date.now() });
+            sendBtn.classList.add('is-sending');
+            state.chatHistory.push({
+                role: 'user',
+                content: text,
+                turnId: `turn-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
+                responseStartedTimestamp: lastResponseTime,
+                timestamp: Date.now()
+            });
             updateChatView();
             lastResponseTime = Date.now();
             triggerAIResponse();
@@ -3346,27 +5043,109 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- End Session Button -> Modal ---
         document.getElementById('end-session-btn').addEventListener('click', () => {
+            if (document.getElementById('end-session-modal')) return;
             // Show styled confirmation modal
             const overlay = document.createElement('div');
             overlay.className = 'ss-modal-overlay';
             overlay.id = 'end-session-modal';
+            overlay.dataset.dialogOverlay = '';
             overlay.innerHTML = `
-                <div class="ss-modal">
-                    <div class="ss-modal-ico">🎤</div>
-                    <h3>End this session?</h3>
-                    <p>Your interview will be evaluated by the AI coach and you'll receive a detailed performance report.</p>
+                <div class="ss-modal" data-dialog aria-labelledby="end-session-modal-title" aria-describedby="end-session-modal-description">
+                    <div class="ss-modal-ico" aria-hidden="true">🎤</div>
+                    <h3 id="end-session-modal-title">End this session?</h3>
+                    <p id="end-session-modal-description">Your interview will be evaluated by the AI coach and you'll receive a detailed performance report.</p>
                     <div class="ss-modal-btns">
-                        <button class="ss-modal-cancel" id="modal-cancel">Continue Interview</button>
-                        <button class="ss-modal-confirm" id="modal-confirm">End & Get Report</button>
+                        <button type="button" class="ss-modal-cancel" id="modal-cancel">Continue Interview</button>
+                        <button type="button" class="ss-modal-confirm" id="modal-confirm">End & Get Report</button>
                     </div>
                 </div>`;
-            document.body.appendChild(overlay);
-            document.getElementById('modal-cancel').onclick = () => overlay.remove();
-            document.getElementById('modal-confirm').onclick = () => { overlay.remove(); window._doEndSession(); };
-            overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+            const closeModal = (restoreFocus = true) => {
+                if (window.AppAccessibility?.closeDialog) {
+                    window.AppAccessibility.closeDialog(overlay, { restoreFocus });
+                } else {
+                    overlay.remove();
+                }
+            };
+            overlay.querySelector('#modal-cancel').onclick = () => closeModal();
+            overlay.querySelector('#modal-confirm').onclick = () => {
+                closeModal(false);
+                window._doEndSession();
+            };
+            if (window.AppAccessibility?.openDialog) {
+                window.AppAccessibility.openDialog(overlay, {
+                    initialFocus: '#modal-cancel',
+                    closeOnBackdrop: true,
+                    closeOnEscape: true,
+                });
+            } else {
+                document.body.appendChild(overlay);
+                overlay.querySelector('#modal-cancel')?.focus();
+                overlay.addEventListener('click', (event) => {
+                    if (event.target === overlay) closeModal();
+                });
+            }
         });
 
-        triggerAIResponse(); // kick off the interview
+        async function initializeDurableSession() {
+            if (!isResuming) {
+                try {
+                    const response = await fetch('/api/interview/plan', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            target_role: state.targetRole || 'professional role',
+                            module: state.selectedModule || 'general',
+                            difficulty: state.difficulty || 'medium',
+                            duration: state.duration || 'standard',
+                            industry: state.industry || 'general',
+                            interviewer_style: state.interviewerPersona?.character || 'friendly',
+                            faang_mode: Boolean(state.faangMode),
+                            interruptions_enabled: Boolean(state.interruptionsEnabled),
+                            job_description: state.jobDescription || '',
+                            resume_text: state.resumeText || '',
+                            focus_context: state.practiceFocus || null,
+                        }),
+                    });
+                    if (response.ok) {
+                        state.interviewPlan = await response.json();
+                        state.roleIntelligence = state.interviewPlan.role_grounding || null;
+                    }
+                } catch (error) {
+                    console.error('Interview plan checkpoint failed:', error);
+                }
+            }
+
+            try {
+                await persistSessionCheckpoint('in_progress');
+            } catch (error) {
+                console.error('Initial session checkpoint failed:', error);
+            }
+
+            updateChatView();
+            const conversation = state.chatHistory.filter(message =>
+                !message.isTyping && !message.isNudge && !message.isInterruption
+            );
+            const latest = conversation[conversation.length - 1];
+            if (!latest || latest.role === 'user' || latest.isSystemError) {
+                triggerAIResponse();
+                return;
+            }
+            if (latest.isClosing) {
+                sessionComplete = true;
+                chatInput.disabled = true;
+                sendBtn.disabled = true;
+                document.getElementById('mic-btn').disabled = true;
+                const endButton = document.getElementById('end-session-btn');
+                if (endButton) endButton.innerHTML = `${ti('chart-bar')} Get my report`;
+                return;
+            }
+            latest.answerReadyTimestamp = Date.now();
+            lastResponseTime = Date.now();
+            lastActivityTime = Date.now();
+            isAITalking = false;
+        }
+
+        initializeDurableSession();
     }
 
     window._doEndSession = async function () {
@@ -3386,7 +5165,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const interviewerStateLabel = document.getElementById('interviewer-state-label');
         if (interviewerStateLabel) interviewerStateLabel.textContent = 'Reviewing the rehearsal';
         const btn = document.getElementById('end-session-btn');
-        if (btn) { btn.disabled = true; btn.innerHTML = `${ti('loader-2')} Evaluating...`; }
+        const evaluationStages = [
+            'Pairing transcript evidence',
+            'Applying the interview rubric',
+            'Checking correctness',
+            'Building the coaching report',
+        ];
+        let evaluationStageIndex = 0;
+        const showEvaluationStage = () => {
+            const message = evaluationStages[Math.min(evaluationStageIndex, evaluationStages.length - 1)];
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = `${ti('loader-2')} ${message}`;
+            }
+            if (interviewerStateLabel) interviewerStateLabel.textContent = message;
+            evaluationStageIndex += 1;
+        };
+        showEvaluationStage();
+        const evaluationStageTimer = setInterval(showEvaluationStage, 4200);
 
         const chatInput = document.getElementById('chat-input');
         const sendBtn = document.getElementById('chat-send');
@@ -3398,56 +5194,50 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.sessionInterval) clearInterval(window.sessionInterval);
 
         try {
-            const res = await fetch('/api/evaluate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: state.selectedModel,
-                    target_role: state.targetRole || 'General Candidate',
-                    module: state.selectedModule || 'general',
-                    job_description: state.jobDescription || '',
-                    messages: state.chatHistory.filter(m => !m.isTyping),
-                    presence_data: presenceData,
-                    engagement_data: engagementData,
-                    camera_on: state.cameraEnabled && presenceData !== null
-                })
+            const evaluationInputs = {
+                presence_data: presenceData,
+                engagement_data: engagementData,
+                camera_on: state.cameraEnabled && presenceData !== null,
+            };
+            await persistSessionCheckpoint('evaluating', {
+                settings: { evaluation_inputs: evaluationInputs },
+                evaluation_error: '',
             });
-            const data = await res.json();
-            const feedback = data.feedback;
+
+            const data = await startEvaluationJob(
+                state.currentSessionId,
+                evaluationInputs,
+                job => {
+                    if (btn) btn.setAttribute('aria-label', `Evaluation ${job.progress || 0}% complete`);
+                },
+            );
+            const feedback = data.feedback || data.session?.feedback;
+            if (!feedback) throw new Error('Evaluation returned no report');
+            clearInterval(evaluationStageTimer);
+            hydrateSessionRecord(data.session);
             state.lastSessionFeedback = feedback;
+            state.sessionStatus = data.status || data.session?.status || 'completed';
 
             if (state.currentAudio) state.currentAudio.pause();
-
-            const sessionTimerEl = document.getElementById('session-timer');
-            let duration = 0;
-            if (sessionTimerEl) {
-                const parts = sessionTimerEl.textContent.split(':');
-                duration = parseInt(parts[0]) * 60 + parseInt(parts[1]);
-            }
-
-            await fetch('/api/sessions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    id: state.currentSessionId, date: new Date().toISOString(),
-                    target_role: state.targetRole, module: state.selectedModule,
-                    duration_seconds: duration, messages: state.chatHistory, feedback: feedback
-                })
-            });
             state.sessionHistoryCache = null;
 
             try {
-                const prevEarned = new Set(JSON.parse(localStorage.getItem('ai_coach_badges') || '[]'));
+                const prevEarned = new Set(readStoredJSON('ai_coach_badges', []));
                 const nowEarned = await computeBadges();
                 const newlyEarned = [...nowEarned].filter(id => !prevEarned.has(id));
-                localStorage.setItem('ai_coach_badges', JSON.stringify([...nowEarned]));
+                persistLocalValue('ai_coach_badges', JSON.stringify([...nowEarned]));
                 if (newlyEarned.length > 0) setTimeout(() => showBadgeNotifications(newlyEarned), 800);
             } catch (e) { }
 
             window.nav('report');
         } catch (e) {
+            clearInterval(evaluationStageTimer);
             console.error("Evaluation error:", e);
-            alert("Evaluation could not be generated. Start Ollama, confirm qwen2.5:7b is installed, then try again.");
+            state.sessionStatus = 'evaluation_failed';
+            await persistSessionCheckpoint('evaluation_failed', {
+                evaluation_error: e.message || 'Evaluation request failed',
+            }).catch(error => console.error('Could not save evaluation failure:', error));
+            alert("The rehearsal is saved, but its report could not be generated. Check the local AI runtime, then retry it from Session History.");
             if (btn) { btn.disabled = false; btn.innerHTML = `${ti('player-stop')} End Session`; }
             if (chatInput) chatInput.disabled = false;
             if (sendBtn) sendBtn.disabled = false;
@@ -3459,7 +5249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.endSession = window._doEndSession;
 
 
-    function renderReport() {
+    async function renderReport() {
         const feedback = state.lastSessionFeedback;
         if (!feedback) {
             mainContent.innerHTML = `<div class="min-h-screen flex items-center justify-center" style="color:var(--t-muted)">No feedback available. <button onclick="window.nav('setup')" style="margin-left:16px;text-decoration:underline;color:var(--t-fg);cursor:pointer;background:none;border:none;font:inherit">Go to Setup</button></div>`;
@@ -3476,9 +5266,25 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         const metricColor = (v) => v >= 80 ? '#4ade80' : v >= 65 ? '#facc15' : '#f87171';
 
-        const score = feedback.overall_score || 0;
-        const grade = gradeOf(score);
-        const userResponses = state.chatHistory.filter(m => m.role === 'user').length;
+        const hasScore = Number.isFinite(feedback.overall_score);
+        const score = hasScore ? feedback.overall_score : 0;
+        const grade = hasScore
+            ? gradeOf(score)
+            : { g: '-', c: '#8a806f', desc: 'Insufficient Evidence' };
+        const reportSession = state.currentSessionRecord || {
+            id: state.currentSessionId,
+            module: state.selectedModule,
+            settings: sessionSettingsSnapshot(),
+            interview_plan: state.interviewPlan,
+            feedback,
+        };
+        const evaluationReviews = await loadEvaluationReviews(reportSession);
+        const focusProgress = await loadFocusProgress(reportSession);
+        const focusProgressHTML = focusProgressMarkup(focusProgress);
+        const focusActionLabel = focusProgress
+            ? (focusProgress.outcome === 'improved' ? 'Practice Next Weak Area' : 'Repeat Focus Areas')
+            : 'Practice Weak Areas';
+        const userResponses = state.chatHistory.filter(m => m.role === 'user' && !m.isHidden && !m.isTimeout).length;
         const moduleTitle = window._getModuleTitle ? window._getModuleTitle(state.selectedModule) : 'Interview';
 
         const MOD_COLORS = {
@@ -3501,6 +5307,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const questionEvaluations = feedback.question_evaluations || [];
         const transcriptFeatures = feedback.transcript_features || {};
         const evaluatorConfidence = feedback.evaluator_confidence;
+        const confidenceDetail = feedback.confidence || {};
+        const verifiedQuestions = questionEvaluations.filter(qe => {
+            const status = qe.verifier?.status;
+            return status && status !== 'not_requested';
+        });
 
         const evalLabel = (key) => ({
             answer_relevance: 'Answer Relevance',
@@ -3511,6 +5322,8 @@ document.addEventListener('DOMContentLoaded', () => {
             role_alignment: 'Role Alignment',
             communication_clarity: 'Communication Clarity',
             adaptability: 'Adaptability',
+            insufficient_evidence: 'Insufficient Evidence',
+            no_signal: 'No Signal',
             not_ready: 'Not Ready',
             developing: 'Developing',
             near_ready: 'Near Ready',
@@ -3561,7 +5374,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (presenceMetrics && presenceMetrics.composite > 0) {
             const pm = presenceMetrics;
             presenceHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-presence-card" style="margin-top:20px">
                 <div class="rpt-coach-header">
                     <div class="rpt-coach-avatar" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">${ti('video')}</div>
                     <div>
@@ -3572,7 +5385,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 ${[
                     { name: `${ti('eye')} Eye Contact`, val: pm.eye_contact || 0 },
-                    { name: `${ti('mood-smile')} Expression`, val: pm.expression || 0 },
+                    { name: `${ti('eye')} Visibility`, val: pm.visibility || 0 },
                     { name: `${ti('run')} Posture`, val: pm.posture || 0 },
                     { name: `${ti('hand-finger')} Gestures`, val: pm.gestures || 0 },
                     { name: `${ti('refresh')} Head Movement`, val: pm.head_movement || 0 },
@@ -3592,7 +5405,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (engagementMetrics && engagementMetrics.composite > 0) {
             const em = engagementMetrics;
             engagementHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-engagement-card" style="margin-top:20px">
                 <div class="rpt-coach-header">
                     <div class="rpt-coach-avatar" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4)">${ti('chart-line')}</div>
                     <div>
@@ -3626,13 +5439,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const blockers = readiness.blockers || [];
             const signals = readiness.strongest_signals || [];
             readinessHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-readiness-card" style="margin-top:20px">
                 <div class="rpt-section-title">${ti('target-arrow')} Job Readiness</div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
                     <div class="rpt-stat-item"><div class="rpt-stat-val">${escapeHTML(evalLabel(readiness.level || 'developing'))}</div><div class="rpt-stat-lbl">Readiness</div></div>
                     <div class="rpt-stat-item"><div class="rpt-stat-val">${escapeHTML(evalLabel(readiness.hire_signal || 'lean_no'))}</div><div class="rpt-stat-lbl">Hire Signal</div></div>
                     <div class="rpt-stat-item"><div class="rpt-stat-val">${Number.isFinite(evaluatorConfidence) ? evaluatorConfidence : '-'}</div><div class="rpt-stat-lbl">Confidence</div></div>
                 </div>
+                ${feedback.evaluation_version ? `<div class="evaluation-engine-summary">
+                    <span>${escapeHTML(feedback.evaluation_version)}</span>
+                    <span>Deterministic scoring</span>
+                    <span>${verifiedQuestions.length ? `${verifiedQuestions.length} focused check${verifiedQuestions.length === 1 ? '' : 's'}` : 'No verifier needed'}</span>
+                    ${Number.isFinite(confidenceDetail.uncertainty_count) ? `<span>${confidenceDetail.uncertainty_count} uncertainty note${confidenceDetail.uncertainty_count === 1 ? '' : 's'}</span>` : ''}
+                </div>` : ''}
                 ${readiness.summary ? `<div class="rpt-coach-summary">${escapeHTML(readiness.summary)}</div>` : ''}
                 ${signals.length ? `<div style="font-size:12px;color:var(--t-muted);line-height:1.7;margin-bottom:8px"><strong style="color:#4ade80">Strongest signals:</strong> ${signals.map(escapeHTML).join('; ')}</div>` : ''}
                 ${blockers.length ? `<div style="font-size:12px;color:var(--t-muted);line-height:1.7"><strong style="color:#fbbf24">Blockers:</strong> ${blockers.map(escapeHTML).join('; ')}</div>` : ''}
@@ -3653,7 +5472,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }).filter(([, val]) => typeof val === 'number');
         if (competencyEntries.length) {
             competencyHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-competency-card" style="margin-top:20px">
                 <div class="rpt-section-title">${ti('chart-bar')} Competency Scorecard</div>
                 ${competencyEntries.map(([key, val]) => `
                 <div class="rpt-metric-row" style="margin-top:8px">
@@ -3671,25 +5490,27 @@ document.addEventListener('DOMContentLoaded', () => {
         let highlightsHTML = '';
         if (questionEvaluations.length > 0) {
             highlightsHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-highlights-card" style="margin-top:20px">
                 <div class="rpt-section-title" style="margin-bottom:12px">${ti('stars')} Question Evaluations</div>
-                ${questionEvaluations.map(qe => `
+                ${questionEvaluations.map((qe, questionIndex) => `
                 <div style="padding:12px 0;border-bottom:1px solid var(--t-border)">
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px">
                         <div style="font-size:12px;font-weight:700;color:var(--t-heading)">"${escapeHTML(qe.question || '')}"</div>
                         <div style="font-size:11px;font-weight:800;color:${metricColor(qe.score || 0)}">${qe.score || 0}</div>
                     </div>
                     <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--t-muted);margin-bottom:6px">${escapeHTML(evalLabel(qe.answer_type || 'partial'))}</div>
+                    ${evaluationProvenanceMarkup(qe)}
                     ${qe.answer_summary ? `<div style="font-size:11px;color:var(--t-muted);margin-bottom:4px"><strong style="color:var(--t-fg)">Answer:</strong> ${escapeHTML(qe.answer_summary)}</div>` : ''}
                     ${qe.coaching_note ? `<div style="font-size:11px;color:var(--t-muted);margin-bottom:4px">${escapeHTML(qe.coaching_note)}</div>` : ''}
                     ${(qe.evidence_quotes || []).length ? `<div style="font-size:11px;color:var(--t-fg);margin:6px 0;padding:8px 10px;border-left:2px solid var(--t-border2);background:var(--t-surface-dim);border-radius:8px"><strong>Evidence:</strong> ${(qe.evidence_quotes || []).map(q => `"${escapeHTML(q)}"`).join(' ')}</div>` : ''}
                     ${qe.missed_opportunity ? `<div style="font-size:11px;color:var(--t-muted);margin-top:6px"><strong style="color:#fbbf24">Missed:</strong> ${escapeHTML(qe.missed_opportunity)}</div>` : ''}
                     ${qe.practice_drill ? `<div style="font-size:11px;color:var(--t-muted);margin-top:4px"><strong style="color:#4ade80">Drill:</strong> ${escapeHTML(qe.practice_drill)}</div>` : ''}
+                    ${evaluationReviewControlsMarkup(reportSession.id, questionIndex, evaluationReviews.get(questionIndex))}
                 </div>`).join('')}
             </div>`;
         } else if (questionHighlights.length > 0) {
             highlightsHTML = `
-            <div class="rpt-coach-card" style="margin-top:20px">
+            <div class="rpt-coach-card rpt-highlights-card" style="margin-top:20px">
                 <div class="rpt-section-title" style="margin-bottom:12px">${ti('stars')} Question Highlights</div>
                 ${questionHighlights.map(qh => `
                 <div style="padding:10px 0;border-bottom:1px solid var(--t-border)">
@@ -3827,13 +5648,14 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- Top bar -->
             <div class="rpt-top">
                 <button class="rpt-back" onclick="window.nav('hero')">${ti('arrow-left')} Back to Home</button>
-                <button class="rpt-export">${ti('file-download')} Export PDF</button>
+                <button class="rpt-export" onclick="window.print()">${ti('file-download')} Export PDF</button>
             </div>
 
             <!-- Header -->
             <div class="rpt-hero-header">
+                <div class="rpt-report-kicker">Session record / coaching edition</div>
                 <div class="rpt-module-pill" style="color:${modColor};border-color:${modColor}40;background:${modColor}12">${ti('chart-bar')} ${moduleTitle}</div>
-                <div class="rpt-session-complete">Session Complete</div>
+                <div class="rpt-session-complete">Post-session review</div>
                 <div class="rpt-session-meta">${escapeHTML(state.targetRole || 'General Role')} - ${userResponses} responses</div>
             </div>
 
@@ -3849,7 +5671,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </svg>
                     <div class="rpt-score-center">
                         <div class="rpt-score-grade" style="color:${grade.c}">${grade.g}</div>
-                        <div class="rpt-score-pct">${score}%</div>
+                        <div class="rpt-score-pct">${hasScore ? `${score}%` : 'Not scored'}</div>
                         <div class="rpt-score-desc" style="color:${grade.c}">${grade.desc}</div>
                     </div>
                 </div>
@@ -3861,6 +5683,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="rpt-stat-item"><div class="rpt-stat-val">${avgWords}</div><div class="rpt-stat-lbl">Avg Words</div></div>
                     </div>
                 </div>
+            </div>
+
+            <div class="rpt-review-grid">
+            <div class="rpt-review-main">
+            <div class="rpt-section-heading">
+                <span>01 / The evidence</span>
+                <strong>Performance ledger</strong>
             </div>
 
             <!-- Radar chart + metric bars -->
@@ -3912,16 +5741,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </div>
 
-            ${readinessHTML}
             ${competencyHTML}
-            ${presenceHTML}
-            ${engagementHTML}
             ${highlightsHTML}
-            ${riskHTML}
-            ${practicePlanHTML}
+
+            <div class="rpt-signal-grid">
+                ${presenceHTML}
+                ${engagementHTML}
+            </div>
+            </div>
+
+            <aside class="rpt-review-margin">
+            <div class="rpt-section-heading rpt-margin-heading">
+                <span>02 / The direction</span>
+                <strong>Coach's margin</strong>
+            </div>
+
+            ${focusProgressHTML}
+            ${readinessHTML}
 
             <!-- AI Coach Notes -->
-            <div class="rpt-coach-card">
+            <div class="rpt-coach-card rpt-coach-note">
                 <div class="rpt-coach-header">
                     <div class="rpt-coach-avatar">${ti('brain')}</div>
                     <div>
@@ -3935,6 +5774,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="rpt-coach-tip-text"><strong>Key Tip:</strong> ${escapeHTML(feedback.improvement_tip || 'Keep practicing to build confidence and refine your answers.')}</div>
                 </div>
             </div>
+
+            ${riskHTML}
+            ${practicePlanHTML}
 
             <!-- Improvement Focus -->
             ${feedback.weakest_area ? `
@@ -3972,13 +5814,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </div>` : ''}
 
+            </aside>
+            </div>
+
             <div class="rpt-divider"></div>
 
             <!-- CTA -->
             <div class="rpt-cta-section">
-                <button class="rpt-cta-primary" onclick="window.nav('setup')">${ti('refresh')} Practice Again</button>
+                ${state.sessionStatus === 'evaluation_failed' || feedback.evaluation_error
+                    ? `<button class="rpt-cta-primary" data-session-id="${escapeHTML(String(state.currentSessionId || ''))}" onclick="window.retrySavedSessionEvaluation(this.dataset.sessionId)">${ti('refresh')} Retry Saved Evaluation</button>
+                       <button class="rpt-cta-secondary" onclick="window.nav('setup')">${ti('player-play')} Start Another Rehearsal</button>`
+                    : hasScore && state.currentSessionId
+                        ? `<button class="rpt-cta-primary" data-session-id="${escapeHTML(String(state.currentSessionId))}" onclick="window.startFocusedRehearsal(this.dataset.sessionId, this)">${ti('target-arrow')} ${focusActionLabel}</button>
+                           <button class="rpt-cta-secondary" onclick="window.nav('setup')">${ti('refresh')} Repeat or Change Setup</button>`
+                        : `<button class="rpt-cta-primary" onclick="window.nav('setup')">${ti('refresh')} Practice Again</button>`}
                 <button class="rpt-cta-secondary" onclick="window.nav('history')">${ti('history')} Session History</button>
-                <button class="rpt-cta-secondary" onclick="window.nav('hero')">${ti('home')} Back to Home</button>
+                ${state.sessionStatus === 'evaluation_failed' || feedback.evaluation_error || (hasScore && state.currentSessionId) ? '' : `<button class="rpt-cta-secondary" onclick="window.nav('hero')">${ti('home')} Back to Home</button>`}
             </div>
 
         </div>
@@ -3992,7 +5843,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Animate metric bars after render
         setTimeout(() => {
             const ring = document.getElementById('rpt-score-ring');
-            if (ring) {
+            if (ring && hasScore) {
                 const circ = 2 * Math.PI * 68;
                 ring.style.strokeDashoffset = circ * (1 - score / 100);
             }
@@ -4004,16 +5855,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- History Page (concept design) ---
     async function renderHistory(filter = 'all') {
+        // navigate() passes a route-options object to views that need return
+        // context. History's direct filter buttons still pass strings.
+        if (typeof filter !== 'string') filter = 'all';
         if (!mainContent.innerHTML.includes('hist-page')) {
             mainContent.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:80vh;color:var(--t-muted)"><span style="animation:spin 1s linear infinite;display:inline-block;margin-right:10px">${ti('loader-2')}</span> Loading history...</div>`;
         }
 
         try {
-            if (!state.sessionHistoryCache) {
-                const res = await fetch('/api/sessions');
-                const data = await res.json();
-                state.sessionHistoryCache = data.sessions || [];
-            }
+            // The archive is the source-of-truth view. Always refresh it so a
+            // slower home-screen request cannot leave a just-saved rehearsal
+            // hidden behind a stale in-memory empty result.
+            const res = await fetch('/api/sessions');
+            if (!res.ok) throw new Error(`Session request failed (${res.status})`);
+            const data = await res.json();
+            state.sessionHistoryCache = data.sessions || [];
             const allSessions = state.sessionHistoryCache;
 
             const MOD_META = {
@@ -4037,8 +5893,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const barColor = (v) => v >= 80 ? '#4ade80' : v >= 65 ? '#facc15' : '#f87171';
 
             const sessions = filter === 'all' ? allSessions : allSessions.filter(s => s.module === filter);
-            const validSessions = sessions.filter(s => s.feedback && typeof s.feedback.overall_score === 'number').reverse();
-            const totalSessions = sessions.length;
+            const completedSessions = sessions.filter(isCompletedSession);
+            const recoverableSessions = sessions.filter(isRecoverableSession);
+            const validSessions = completedSessions
+                .filter(s => s.feedback && typeof s.feedback.overall_score === 'number')
+                .reverse();
+            const totalSessions = completedSessions.length;
 
             let avgScore = 0, bestScore = 0, recentTrend = 0;
             if (validSessions.length > 0) {
@@ -4077,6 +5937,7 @@ document.addEventListener('DOMContentLoaded', () => {
             @keyframes orb-d3{0%,100%{transform:translate(-50%,-50%)}50%{transform:translate(-50%,-50%) translate(50px,-60px)}}
             .hist-page{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:48px 40px 80px;color:var(--t-fg)}
             .hist-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:48px}
+            .hist-top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
             .hist-back{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--t-muted);background:none;border:none;cursor:pointer;transition:color .2s;padding:0;font-family:inherit}
             .hist-back:hover{color:var(--t-fg)}
             .hist-clear{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--t-muted);background:none;border:1px solid var(--t-border);border-radius:8px;padding:7px 14px;cursor:pointer;transition:all .2s;font-family:inherit}
@@ -4114,6 +5975,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .hist-info{flex:1;min-width:0}
             .hist-role{font-size:15px;font-weight:700;color:var(--t-fg);margin-bottom:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
             .hist-mod{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:5px;border:1px solid}
+            .hist-status{display:inline-flex;align-items:center;font-size:10px;font-weight:750;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;border-radius:5px;border:1px solid currentColor}
             .hist-meta{font-size:12px;color:var(--t-muted);display:flex;align-items:center;gap:8px;margin-bottom:10px}
             .hist-dot{width:3px;height:3px;border-radius:50%;background:var(--t-border2);display:inline-block}
             .hist-bars{display:flex;gap:12px;flex-wrap:wrap}
@@ -4121,6 +5983,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .hist-bar-l{font-size:10px;color:var(--t-muted);font-weight:500}
             .hist-bar-bg{height:4px;background:var(--t-bar-track);border-radius:99px;overflow:hidden}
             .hist-bar-f{height:100%;border-radius:99px;transition:width .6s ease}
+            .hist-draft-note{font-size:11px;color:var(--t-muted);line-height:1.5;display:flex;align-items:center;gap:6px}
             .hist-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
             .hist-date{font-size:11px;color:var(--t-muted)}
             .hist-review{opacity:0;transform:translateX(6px);transition:all .2s;padding:6px 12px;border-radius:8px;background:hsla(38,92%,50%,.1);border:1px solid hsla(38,92%,50%,.3);color:var(--c-amber);font-size:11px;font-weight:600;cursor:pointer;font-family:inherit}
@@ -4142,12 +6005,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 sessionsHtml = `<div class="hist-empty"><div class="hist-empty-ico">${ti('search')}</div><h3>No sessions found</h3><p>No sessions match this filter.</p></div>`;
             } else {
                 sessionsHtml = sessions.map((s, idx) => {
-                    const score = s.feedback?.overall_score || 0;
-                    const g = gradeOf(score);
+                    const completed = isCompletedSession(s);
+                    const status = completed ? 'completed' : (s.status || 'in_progress');
+                    const hasScore = completed && Number.isFinite(s.feedback?.overall_score);
+                    const score = hasScore ? s.feedback.overall_score : 0;
+                    const g = hasScore ? gradeOf(score) : {
+                        g: status === 'evaluation_failed' ? '!' : '…',
+                        c: status === 'evaluation_failed' ? '#ef4444' : '#8a806f'
+                    };
                     const mm = MOD_META[s.module] || MOD_META.general;
                     const circ = 2 * Math.PI * 22;
                     const off = circ * (1 - score / 100);
-                    const dateStr = new Date(s.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                    const dateStr = new Date(s.updated_at || s.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                     const dur = s.duration_seconds > 0 ? Math.round(s.duration_seconds / 60) + ' min' : '< 1 min';
                     const histScores = s.feedback?.pillars?.interview?.scores || s.feedback?.interview_scores || s.feedback?.scores || {};
                     const resp = histScores.responsiveness || 0;
@@ -4157,10 +6026,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (s.messages && Array.isArray(s.messages)) {
                         userRespCount = s.messages.filter(m => m.role === 'user').length;
                     }
+                    const statusMeta = {
+                        in_progress: { label: 'Draft', color: '#60a5fa', action: 'Resume rehearsal', note: 'Your answers are safely saved on this machine.' },
+                        evaluating: { label: 'Report pending', color: '#f59e0b', action: 'Retry report', note: 'The rehearsal finished; its report still needs to be generated.' },
+                        evaluation_failed: { label: 'Report interrupted', color: '#ef4444', action: 'Retry report', note: 'The transcript is intact. Retry when the local AI is available.' },
+                        abandoned: { label: 'Archived draft', color: '#8a806f', action: 'Open file', note: 'This rehearsal ended before evaluation.' },
+                        completed: { label: 'Completed', color: '#22c55e', action: 'Open file', note: '' },
+                    }[status] || { label: 'Draft', color: '#60a5fa', action: 'Resume rehearsal', note: 'Your answers are safely saved on this machine.' };
+                    const sessionRef = sessions.indexOf(s);
 
                     return `
-                    <div class="hist-sess" style="--acc:${mm.color}" onclick="window.renderSessionReview(window._historySessionsRef[${sessions.indexOf(s)}])">
-                        <style>.hist-sess:nth-child(${idx + 1})::before{background:${mm.color};opacity:.7}</style>
+                    <article class="hist-sess" style="--acc:${mm.color};--delay:${idx * 45}ms" role="button" tabindex="0"
+                        aria-label="${statusMeta.action}"
+                        onclick="window.openHistorySession(window._historySessionsRef[${sessionRef}])"
+                        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.openHistorySession(window._historySessionsRef[${sessionRef}])}">
+                        <div class="hist-file-no">${String(idx + 1).padStart(2, '0')}</div>
                         <div class="hist-grade">
                             <svg viewBox="0 0 56 56">
                                 <circle cx="28" cy="28" r="22" fill="none" stroke="var(--t-border)" stroke-width="4"/>
@@ -4169,30 +6049,32 @@ document.addEventListener('DOMContentLoaded', () => {
                                     stroke-linecap="round" style="filter:drop-shadow(0 0 5px ${g.c}60)"/>
                             </svg>
                             <div class="hist-grade-lbl" style="color:${g.c}">${g.g}</div>
-                            <div class="hist-grade-sub">${score}%</div>
+                            <div class="hist-grade-sub">${hasScore ? `${score}%` : 'Not scored'}</div>
                         </div>
                         <div class="hist-info">
                             <div class="hist-role">
-                                ${s.target_role || 'General Role'}
+                                ${escapeHTML(s.target_role || 'General Role')}
                                 <span class="hist-mod" style="color:${mm.color};background:${mm.bg};border-color:${mm.border}">${ti(mm.icon || 'circle')} ${mm.label}</span>
+                                <span class="hist-status" style="color:${statusMeta.color};background:${statusMeta.color}12">${statusMeta.label}</span>
                             </div>
                             <div class="hist-meta">
                                 <span>${dateStr}</span><span class="hist-dot"></span>
                                 <span>${dur}</span><span class="hist-dot"></span>
                                 <span>${userRespCount} responses</span>
                             </div>
-                            <div class="hist-bars">
+                            ${hasScore ? `<div class="hist-bars">
                                 ${[['Resp', resp], ['Depth', depth], ['Clarity', clarity]].map(([l, v]) => `
                                 <div class="hist-bar-w">
                                     <div class="hist-bar-l">${l} <span style="color:var(--t-heading);font-weight:700">${v}</span></div>
                                     <div class="hist-bar-bg"><div class="hist-bar-f" style="width:${v}%;background:${barColor(v)}"></div></div>
                                 </div>`).join('')}
-                            </div>
+                            </div>` : `<div class="hist-draft-note">${ti(status === 'evaluation_failed' ? 'alert-triangle' : 'device-floppy')} ${statusMeta.note}</div>`}
                         </div>
                         <div class="hist-right">
-                            <button class="hist-review">Review ${ti('arrow-right')}</button>
+                            <div class="hist-date">Saved ${dateStr}</div>
+                            <span class="hist-review">${statusMeta.action} ${ti('arrow-right')}</span>
                         </div>
-                    </div>`;
+                    </article>`;
                 }).join('');
             }
 
@@ -4203,29 +6085,46 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="hist-page">
                 <div class="hist-top">
                     <button class="hist-back" onclick="window.nav('hero')">${ti('arrow-left')} Back to Home</button>
-                    ${allSessions.length > 0 ? `<button class="hist-clear" onclick="window.clearHistory()">${ti('trash')} Clear History</button>` : ''}
+                    <div class="hist-top-actions">
+                        <details class="hist-advanced">
+                            <summary class="hist-advanced-toggle">${ti('adjustments')} Advanced</summary>
+                            <div class="hist-advanced-menu">
+                                <button class="hist-advanced-action" type="button" onclick="window.nav('calibration')">Evaluator Calibration</button>
+                            </div>
+                        </details>
+                        ${allSessions.length > 0 ? `<button class="hist-clear" onclick="window.clearHistory()">${ti('trash')} Clear History</button>` : ''}
+                    </div>
                 </div>
 
-                <div class="hist-title">Session History</div>
-                <div class="hist-sub">Track your interview preparation progress over time.</div>
+                <section class="hist-hero">
+                    <div>
+                        <div class="hist-kicker">Private practice record / local archive</div>
+                        <div class="hist-title">The rehearsal<br>files.</div>
+                        <div class="hist-sub">Every rehearsal is filed here — scores, evidence, and the next thing worth practising.</div>
+                    </div>
+                    <div class="hist-private-mark">
+                        <span class="hist-private-icon" aria-hidden="true">${ti('lock')}</span>
+                        <span class="hist-private-copy"><strong>Private. Local. Yours.</strong><span>Stored on this machine</span></span>
+                    </div>
+                </section>
 
                 ${allSessions.length > 0 ? `
                 <!-- Stats -->
                 <div class="hist-stats">
-                    <div class="hist-stat"><div class="hist-stat-ico">${ti('calendar')}</div><div class="hist-stat-val">${totalSessions}</div><div class="hist-stat-lbl">Total Sessions</div></div>
-                    <div class="hist-stat"><div class="hist-stat-ico">${ti('chart-bar')}</div><div class="hist-stat-val">${avgScore}%</div><div class="hist-stat-lbl">Average Score</div></div>
-                    <div class="hist-stat"><div class="hist-stat-ico">${ti('trophy')}</div><div class="hist-stat-val">${bestScore}%</div><div class="hist-stat-lbl">Best Score</div></div>
-                    <div class="hist-stat"><div class="hist-stat-ico">${ti('trending-up')}</div><div class="hist-stat-val ${tc}">${ts}${recentTrend}%</div><div class="hist-stat-lbl">Recent Trend</div></div>
+                    <div class="hist-stat"><div class="hist-stat-ico">${ti('calendar')}</div><div class="hist-stat-val">${totalSessions}</div><div class="hist-stat-lbl">Completed Sessions${recoverableSessions.length ? ` · ${recoverableSessions.length} saved` : ''}</div></div>
+                    <div class="hist-stat"><div class="hist-stat-ico">${ti('chart-bar')}</div><div class="hist-stat-val">${validSessions.length ? `${avgScore}%` : '—'}</div><div class="hist-stat-lbl">Average Mark</div></div>
+                    <div class="hist-stat"><div class="hist-stat-ico">${ti('trophy')}</div><div class="hist-stat-val">${validSessions.length ? `${bestScore}%` : '—'}</div><div class="hist-stat-lbl">Best Mark</div></div>
+                    <div class="hist-stat"><div class="hist-stat-ico">${ti('trending-up')}</div><div class="hist-stat-val ${tc}">${validSessions.length >= 2 ? `${ts}${recentTrend}%` : '—'}</div><div class="hist-stat-lbl">Latest Movement</div></div>
                 </div>
 
                 <!-- Chart -->
                 ${validSessions.length >= 2 ? `
                 <div class="hist-chart">
                     <div class="hist-chart-hd">
-                        <span class="hist-chart-title">Score Trend</span>
+                        <span class="hist-chart-title">Performance trace</span>
                         <div class="hist-chart-leg">
-                            <div class="hist-leg"><div class="hist-leg-dot" style="background:#f59e0b"></div>Overall score</div>
-                            <div class="hist-leg"><div class="hist-leg-dot" style="background:#60a5fa;opacity:.6"></div>Avg</div>
+                            <div class="hist-leg"><div class="hist-leg-dot hist-leg-overall"></div>Session mark</div>
+                            <div class="hist-leg"><div class="hist-leg-dot hist-leg-average"></div>Archive average</div>
                         </div>
                     </div>
                     <canvas class="hist-canvas" id="histChart"></canvas>
@@ -4233,7 +6132,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <!-- Filters -->
                 <div class="hist-filter">
-                    <span class="hist-flbl">Filter:</span>
+                    <span class="hist-flbl">Open drawer:</span>
                     <button class="${chipClass(filter, 'all')}" onclick="window.filterHistory('all')">All Modules</button>
                     <button class="${chipClass(filter, 'general')}" onclick="window.filterHistory('general')">${ti('layers-intersect')} General</button>
                     <button class="${chipClass(filter, 'roleplay')}" onclick="window.filterHistory('roleplay')">${ti('messages')} Roleplay</button>
@@ -4245,6 +6144,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 ` : ''}
 
                 <!-- Session list -->
+                <div class="hist-list-heading">
+                    <div><span>Filed records</span><strong>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</strong></div>
+                    <p>Select a file to reopen its complete review.</p>
+                </div>
                 <div class="hist-list">${sessionsHtml}</div>
             </div>
             </div>`;
@@ -4272,19 +6175,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     const avg = Math.round(data.reduce((a, b) => a + b.feedback.overall_score, 0) / data.length);
 
                     // Grid
-                    ctx.strokeStyle = 'var(--t-bar-track)';
+                    ctx.strokeStyle = 'rgba(71,62,49,.17)';
                     ctx.lineWidth = 1;
                     [0, 25, 50, 75, 100].forEach(v => {
                         const y = pad.t + iH - (v / 100) * iH;
                         ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + iW, y); ctx.stroke();
-                        ctx.fillStyle = 'var(--t-border2)';
-                        ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
+                        ctx.fillStyle = 'rgba(71,62,49,.62)';
+                        ctx.font = '10px Georgia,serif'; ctx.textAlign = 'right';
                         ctx.fillText(v, pad.l - 6, y + 3.5);
                     });
 
                     // Avg dashed
                     const avgY = pad.t + iH - (avg / 100) * iH;
-                    ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(96,165,250,.4)'; ctx.lineWidth = 1;
+                    ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(23,79,67,.46)'; ctx.lineWidth = 1;
                     ctx.beginPath(); ctx.moveTo(pad.l, avgY); ctx.lineTo(pad.l + iW, avgY); ctx.stroke();
                     ctx.setLineDash([]);
 
@@ -4298,8 +6201,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // Gradient fill
                     const grad = ctx.createLinearGradient(0, pad.t, 0, pad.t + iH);
-                    grad.addColorStop(0, 'rgba(245,158,11,.25)');
-                    grad.addColorStop(1, 'rgba(245,158,11,0)');
+                    grad.addColorStop(0, 'rgba(165,61,39,.18)');
+                    grad.addColorStop(1, 'rgba(165,61,39,0)');
                     ctx.beginPath();
                     pts.forEach((p, i) => {
                         if (i === 0) ctx.moveTo(p.x, p.y);
@@ -4321,18 +6224,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             ctx.bezierCurveTo(cp, pts[i - 1].y, cp, p.y, p.x, p.y);
                         }
                     });
-                    ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.5; ctx.stroke();
+                    ctx.strokeStyle = '#a53d27'; ctx.lineWidth = 2; ctx.stroke();
 
                     // Dots
                     pts.forEach(p => {
                         ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-                        ctx.fillStyle = '#f59e0b'; ctx.shadowColor = '#f59e0b'; ctx.shadowBlur = 8;
+                        ctx.fillStyle = '#a53d27'; ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
                         ctx.fill(); ctx.shadowBlur = 0;
-                        ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+                        ctx.beginPath(); ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2); ctx.fillStyle = '#f2eadc'; ctx.fill();
                     });
 
                     // X labels
-                    ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'center';
+                    ctx.fillStyle = 'rgba(71,62,49,.62)'; ctx.font = '10px Georgia,serif'; ctx.textAlign = 'center';
                     ctx.fillText(pts[0].date, pts[0].x, pad.t + iH + 18);
                     ctx.fillText(pts[pts.length - 1].date, pts[pts.length - 1].x, pad.t + iH + 18);
                     if (pts.length > 4) {
@@ -4348,12 +6251,110 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function renderCalibration() {
+        mainContent.innerHTML = `<div class="calibration-loading">${ti('loader-2')} Loading calibration ledger…</div>`;
+        try {
+            const response = await fetch('/api/calibration/summary');
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Calibration summary is unavailable');
+            const calibration = data.calibration || {};
+            const counts = calibration.counts || {};
+            const label = value => String(value || '').replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+            const rate = value => Number.isFinite(value) ? `${value}%` : '—';
+
+            const moduleRows = (calibration.modules || []).map(item => `
+                <div class="calibration-row">
+                    <div class="calibration-row__name"><strong>${escapeHTML(label(item.module))}</strong><span>${item.review_count} reviewed ${item.review_count === 1 ? 'answer' : 'answers'}</span></div>
+                    <div class="calibration-row__measure"><strong>${rate(item.agreement_rate)}</strong><span>agreement</span></div>
+                    <div class="calibration-row__bias">${escapeHTML(item.bias)}</div>
+                </div>`).join('');
+
+            const competencyRows = (calibration.competencies || []).slice(0, 10).map(item => `
+                <div class="calibration-row calibration-row--competency">
+                    <div class="calibration-row__name"><strong>${escapeHTML(label(item.key))}</strong><span>${item.review_count} linked ${item.review_count === 1 ? 'judgment' : 'judgments'}</span></div>
+                    <div class="calibration-row__measure"><strong>${rate(item.agreement_rate)}</strong><span>agreement</span></div>
+                    <div class="calibration-row__bias">${escapeHTML(item.bias)}</div>
+                </div>`).join('');
+
+            const verdictMeta = {
+                accurate: { label: 'Accurate', tone: 'positive' },
+                too_harsh: { label: 'Too harsh', tone: 'warning' },
+                too_generous: { label: 'Too generous', tone: 'negative' },
+                wrong_evidence: { label: 'Wrong evidence', tone: 'evidence' },
+            };
+            const recentRows = (calibration.recent_reviews || []).map(item => {
+                const verdict = verdictMeta[item.verdict] || { label: label(item.verdict), tone: 'neutral' };
+                return `<div class="calibration-review-row">
+                    <div class="calibration-review-row__main">
+                        <div><span>${escapeHTML(label(item.module))}</span> · ${escapeHTML(item.target_role || 'General Candidate')}</div>
+                        <strong>${escapeHTML(item.question_text || 'Reviewed question')}</strong>
+                    </div>
+                    <div class="calibration-review-row__score">${Number.isFinite(item.evaluator_score) ? item.evaluator_score : '—'}</div>
+                    <span class="calibration-verdict calibration-verdict--${verdict.tone}">${verdict.label}</span>
+                </div>`;
+            }).join('');
+
+            const hasReviews = Number(calibration.review_count) > 0;
+            mainContent.innerHTML = `
+                <main class="calibration-page">
+                    <header class="calibration-topbar">
+                        <button class="calibration-back" onclick="window.nav('history')">${ti('arrow-left')} Session History</button>
+                        <a class="calibration-export${hasReviews ? '' : ' is-disabled'}" href="${hasReviews ? '/api/calibration/export' : '#'}" ${hasReviews ? 'download' : 'aria-disabled="true"'}>${ti('file-download')} Export benchmark cases</a>
+                    </header>
+
+                    <section class="calibration-intro">
+                        <div>
+                            <div class="calibration-kicker">Local evaluator review</div>
+                            <h1>Calibration ledger.</h1>
+                            <p>Human judgments reveal where the evaluator is fair, systematically harsh or generous, or citing the wrong evidence. Historical scores are never changed automatically.</p>
+                        </div>
+                        <div class="calibration-privacy">${ti('lock')}<strong>Private by design</strong><span>Stored only on this machine</span></div>
+                    </section>
+
+                    <section class="calibration-stats" aria-label="Calibration summary">
+                        <div class="calibration-stat"><strong>${calibration.review_count || 0}</strong><span>Reviewed answers</span></div>
+                        <div class="calibration-stat"><strong>${rate(calibration.agreement_rate)}</strong><span>Score agreement</span></div>
+                        <div class="calibration-stat"><strong>${counts.too_harsh || 0} / ${counts.too_generous || 0}</strong><span>Harsh / generous</span></div>
+                        <div class="calibration-stat"><strong>${calibration.evidence_disputes || 0}</strong><span>Evidence disputes</span></div>
+                    </section>
+
+                    ${hasReviews ? `
+                    <div class="calibration-grid">
+                        <section class="calibration-panel">
+                            <div class="calibration-panel__head"><div><span>Scoring direction</span><h2>Bias by interview format</h2></div><strong>${escapeHTML(calibration.bias || '')}</strong></div>
+                            <div class="calibration-rows">${moduleRows || '<p class="calibration-empty-copy">No module signal yet.</p>'}</div>
+                        </section>
+
+                        <section class="calibration-panel">
+                            <div class="calibration-panel__head"><div><span>Rubric signal</span><h2>Competencies to inspect</h2></div></div>
+                            <div class="calibration-rows">${competencyRows || '<p class="calibration-empty-copy">More reviewed answers will reveal competency-level patterns.</p>'}</div>
+                        </section>
+                    </div>
+
+                    <section class="calibration-panel calibration-panel--recent">
+                        <div class="calibration-panel__head"><div><span>Latest judgments</span><h2>Recent evaluator reviews</h2></div></div>
+                        <div class="calibration-review-list">${recentRows}</div>
+                    </section>` : `
+                    <section class="calibration-empty">
+                        <div class="calibration-empty__mark">01</div>
+                        <div><h2>Review your first scored answer.</h2><p>Open a completed session and use the four choices beneath an answer: Accurate, Too harsh, Too generous, or Wrong evidence.</p></div>
+                        <button onclick="window.nav('history')">Open session files ${ti('arrow-right')}</button>
+                    </section>`}
+                </main>`;
+            window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        } catch (error) {
+            console.error('Calibration ledger failed to load:', error);
+            mainContent.innerHTML = `<div class="calibration-loading calibration-loading--error">The calibration ledger could not be loaded. <button onclick="window.nav('history')">Return to session history</button></div>`;
+        }
+    }
+
     // --- Session Review Page (concept design) ---
-    window.renderSessionReview = function (session) {
+    window.renderSessionReview = async function (session) {
         if (!session) return;
         const messages = session.messages || [];
         const feedback = session.feedback || {};
-        const score = feedback.overall_score || 0;
+        const hasScore = Number.isFinite(feedback.overall_score);
+        const score = hasScore ? feedback.overall_score : 0;
         const role = session.target_role || 'General Role';
         const mod = session.module || 'general';
         const dateStr = new Date(session.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -4376,12 +6377,42 @@ document.addEventListener('DOMContentLoaded', () => {
         const cleanMsgs = messages.filter(m => !m.isHidden && !m.isNudge);
         for (let i = 0; i < cleanMsgs.length; i++) {
             if (cleanMsgs[i].role === 'assistant' && cleanMsgs[i + 1]?.role === 'user') {
-                pairs.push({ q: cleanMsgs[i].content, a: cleanMsgs[i + 1].content, isCurveball: !!cleanMsgs[i].isCurveball });
+                pairs.push({
+                    q: String(cleanMsgs[i].content ?? ''),
+                    a: String(cleanMsgs[i + 1].content ?? ''),
+                    isCurveball: !!cleanMsgs[i].isCurveball,
+                });
             }
         }
 
         const curveballCount = pairs.filter(p => p.isCurveball).length;
         const wordsPerAnswer = pairs.length ? Math.round(pairs.reduce((s, p) => s + p.a.split(' ').length, 0) / pairs.length) : 0;
+        let comparison = { count: 0, average_score: null, best_score: null, change: null };
+        if (session.id) {
+            try {
+                const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/comparison`);
+                if (response.ok) {
+                    const data = await response.json();
+                    comparison = { ...comparison, ...(data.comparison || {}) };
+                }
+            } catch (error) {
+                console.warn('Comparable-session trend unavailable:', error);
+            }
+        }
+        const comparisonChange = Number.isFinite(comparison.change) ? comparison.change : null;
+        const comparisonValue = comparisonChange !== null
+            ? `${comparisonChange > 0 ? '+' : ''}${comparisonChange}%`
+            : comparison.count;
+        const comparisonLabel = comparisonChange !== null ? 'Comparable Change' : 'Comparable Sessions';
+        const comparisonColor = comparisonChange > 0
+            ? '#4ade80'
+            : comparisonChange < 0 ? '#f87171' : 'var(--t-fg)';
+        const evaluationReviews = await loadEvaluationReviews(session);
+        const focusProgress = await loadFocusProgress(session);
+        const focusProgressHTML = focusProgressMarkup(focusProgress);
+        const focusActionLabel = focusProgress
+            ? (focusProgress.outcome === 'improved' ? 'Practice Next Weak Area' : 'Repeat Focus Areas')
+            : 'Practice Weak Areas';
 
         const MOD_META = {
             general: { label: 'General', color: '#84cc16' },
@@ -4398,6 +6429,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const srReadiness = feedback.readiness || null;
         const srRiskFlags = feedback.risk_flags || [];
         const srPracticePlan = feedback.practice_plan || [];
+        const srConfidence = feedback.confidence || {};
+        const srVerified = (feedback.question_evaluations || []).filter(item => {
+            const status = item.verifier?.status;
+            return status && status !== 'not_requested';
+        });
         const resp = srInterviewScores.responsiveness || 0;
         const depth = srInterviewScores.depth || 0;
         const clarity = srInterviewScores.clarity || 0;
@@ -4407,6 +6443,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ['Communication Clarity', clarity], ['Professional Presence', presence]
         ];
         const srEvalLabel = (key) => ({
+            insufficient_evidence: 'Insufficient Evidence',
+            no_signal: 'No Signal',
             not_ready: 'Not Ready',
             developing: 'Developing',
             near_ready: 'Near Ready',
@@ -4469,11 +6507,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 .sr-retry:hover{transform:translateY(-1px);box-shadow:0 8px 28px -4px hsla(38,92%,50%,.5)}
 
                 /* Stats strip */
-                .sr-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-top:1px solid var(--t-border);margin-top:24px;padding-top:20px}
+                .sr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--t-border);margin-top:24px;padding-top:20px}
                 .sr-stat{text-align:center}
                 .sr-stat + .sr-stat{border-left:1px solid var(--t-border)}
                 .sr-stat-val{font-size:1.4rem;font-weight:800;margin-bottom:4px}
                 .sr-stat-lbl{font-size:11px;color:var(--t-muted)}
+                @media(max-width:640px){.sr-stats{grid-template-columns:repeat(2,1fr);row-gap:18px}.sr-stat:nth-child(3){border-left:0}.sr-stat:nth-child(n+3){border-top:1px solid var(--t-border);padding-top:18px}}
 
                 /* TWO COLUMN */
                 .sr-cols{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start}
@@ -4578,7 +6617,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </svg>
                                 <div class="sr-ring-center">
                                     <div class="sr-ring-grade" style="color:${g.c}">${g.g}</div>
-                                    <div class="sr-ring-pct">${score}%</div>
+                                    <div class="sr-ring-pct">${hasScore ? `${score}%` : 'Not scored'}</div>
                                 </div>
                             </div>
 
@@ -4588,12 +6627,14 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <span class="sr-mod-badge" style="color:${mm.color};background:${mm.color}20;border:1px solid ${mm.color}40">${mm.label}</span>
                                     <span class="sr-grade-badge" style="color:${g.c};background:${g.c}15;border:1px solid ${g.c}30">${g.label}</span>
                                 </div>
-                                <div class="sr-hero-role">${role}</div>
+                                <div class="sr-hero-role">${escapeHTML(role)}</div>
                                 <div class="sr-hero-meta">${dateStr} - ${durationMin} min - ${pairs.length} questions</div>
                             </div>
 
-                            <!-- Retry -->
-                            <button class="sr-retry" onclick="state.targetRole='${role.replace(/'/g, "\\'")}';state.selectedModule='${mod}';window.nav('setup');">${ti('refresh')} Retry This Role</button>
+                            <!-- Next rehearsal -->
+                            ${hasScore && session.id
+                                ? `<button class="sr-retry" data-session-id="${escapeHTML(String(session.id))}" onclick="window.startFocusedRehearsal(this.dataset.sessionId, this)">${ti('target-arrow')} ${focusActionLabel}</button>`
+                                : `<button class="sr-retry" data-role="${escapeHTML(role)}" data-module="${escapeHTML(mod)}" onclick="window._repeatRoleFromControl(this)">${ti('refresh')} Retry This Role</button>`}
                         </div>
 
                         <!-- Stats strip -->
@@ -4601,6 +6642,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             <div class="sr-stat"><div class="sr-stat-val">${pairs.length}</div><div class="sr-stat-lbl">Questions</div></div>
                             <div class="sr-stat"><div class="sr-stat-val" style="color:${curveballCount > 0 ? '#facc15' : 'var(--t-fg)'}">${curveballCount}</div><div class="sr-stat-lbl">Curveballs</div></div>
                             <div class="sr-stat"><div class="sr-stat-val" style="color:${wcColor(wordsPerAnswer)}">${wordsPerAnswer}</div><div class="sr-stat-lbl">Avg Words / Answer</div></div>
+                            <div class="sr-stat"><div class="sr-stat-val" style="color:${comparisonColor}">${comparisonValue}</div><div class="sr-stat-lbl">${comparisonLabel}</div></div>
                         </div>
                     </div>
 
@@ -4620,6 +6662,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const wc = p.a.split(' ').length;
             const wcc = wcColor(wc);
             const wcLabel = wc >= 60 ? 'Detailed' : wc >= 20 ? 'Decent' : 'Too brief';
+            const questionEvaluation = (feedback.question_evaluations || [])[i];
             return `
                                     <div class="sr-qa-item">
                                         <div class="sr-qa-num ${p.isCurveball ? 'curveball' : ''}">${i + 1}</div>
@@ -4630,25 +6673,32 @@ document.addEventListener('DOMContentLoaded', () => {
                                                     <span class="sr-q-label">Interviewer</span>
                                                     ${p.isCurveball ? `<span class="sr-curveball-pill">${ti('bolt')} Curveball</span>` : ''}
                                                 </div>
-                                                <div class="sr-q-text">${p.q}</div>
+                                                <div class="sr-q-text">${escapeHTML(p.q)}</div>
                                             </div>
                                             <div class="sr-a-pane">
                                                 <div class="sr-a-head">
                                                     <div class="sr-a-icon">${ti('user')}</div>
                                                     <span class="sr-a-label">Your Answer</span>
                                                 </div>
-                                                <div class="sr-a-text">${p.a}</div>
+                                                <div class="sr-a-text">${escapeHTML(p.a)}</div>
                                                 <div class="sr-wc-row">
                                                     <div class="sr-wc-bar-wrap">
                                                         <div class="sr-wc-bar-bg"><div class="sr-wc-bar-fill" style="width:${Math.min(wc / 120 * 100, 100)}%;background:${wcc}"></div></div>
                                                         <div class="sr-wc-label" style="color:${wcc}">${wc} words - ${wcLabel}</div>
                                                     </div>
-                                                    <button class="sr-ideal-btn" id="sr-ideal-btn-${i}" onclick="window._srToggleIdeal(${i}, \`${p.q.replace(/`/g, '\\`').replace(/\n/g, ' ').substring(0, 300)}\`, '${role.replace(/'/g, "\\'")}', '${mod}')">${ti('sparkles')} Ideal Answer</button>
+                                                    <button class="sr-ideal-btn" id="sr-ideal-btn-${i}"
+                                                        data-question="${escapeHTML(p.q.substring(0, 300))}"
+                                                        data-role="${escapeHTML(role)}" data-module="${escapeHTML(mod)}"
+                                                        onclick="window._srToggleIdealFromControl(${i}, this)">${ti('sparkles')} Ideal Answer</button>
                                                 </div>
                                                 <div class="sr-ideal-box" id="sr-ideal-${i}">
                                                     <div class="sr-ideal-tag">${ti('sparkles')} Ideal Answer</div>
                                                     <div class="sr-ideal-text" id="sr-ideal-text-${i}">Generating...</div>
                                                 </div>
+                                                ${questionEvaluation ? evaluationProvenanceMarkup(questionEvaluation) : ''}
+                                                ${questionEvaluation
+                                                    ? evaluationReviewControlsMarkup(session.id, i, evaluationReviews.get(i))
+                                                    : ''}
                                             </div>
                                         </div>
                                     </div>`;
@@ -4659,6 +6709,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         <!-- RIGHT: Sidebar -->
                         <div class="sr-sidebar sr-fade-in" style="animation-delay:.3s">
+                            ${focusProgressHTML}
                             <!-- Performance breakdown -->
                             <div class="sr-sidebar-card">
                                 <div class="sr-scard-title">${ti('chart-bar')} Performance Breakdown</div>
@@ -4671,6 +6722,14 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <div class="sr-sm-bg"><div class="sr-sm-fill" data-w="${val}%" style="width:0%;background:${metricColor(val)}"></div></div>
                                 </div>`).join('')}
                             </div>
+
+                            ${feedback.evaluation_version ? `<div class="sr-sidebar-card">
+                                <div class="sr-scard-title">${ti('shield-check')} Evaluation Reliability</div>
+                                <div class="sr-sub-metric"><div class="sr-sm-row"><span class="sr-sm-name">Engine</span><span class="sr-sm-val">${escapeHTML(feedback.evaluation_version)}</span></div></div>
+                                <div class="sr-sub-metric"><div class="sr-sm-row"><span class="sr-sm-name">Confidence</span><span class="sr-sm-val">${Number.isFinite(feedback.evaluator_confidence) ? feedback.evaluator_confidence : '—'}${srConfidence.level ? ` · ${escapeHTML(srEvalLabel(srConfidence.level))}` : ''}</span></div></div>
+                                <div class="sr-sub-metric"><div class="sr-sm-row"><span class="sr-sm-name">Focused checks</span><span class="sr-sm-val">${srVerified.length}</span></div></div>
+                                <p class="sr-feedback-text">Numeric scores and limiting gates were applied deterministically from categorical rubric judgments.</p>
+                            </div>` : ''}
 
                             ${srReadiness ? `
                             <div class="sr-sidebar-card">
@@ -4702,7 +6761,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             <div class="sr-sidebar-card">
                                 <div class="sr-scard-title">${ti('bolt')} Quick Actions</div>
                                 <div class="sr-qa-actions">
-                                    <button class="sr-act-btn primary" onclick="state.targetRole='${role.replace(/'/g, "\\'")}';state.selectedModule='${mod}';window.nav('setup');"><span class="sr-act-icon">${ti('refresh')}</span> Retry This Role</button>
+                                    ${hasScore && session.id ? `<button class="sr-act-btn primary" data-session-id="${escapeHTML(String(session.id))}" onclick="window.startFocusedRehearsal(this.dataset.sessionId, this)"><span class="sr-act-icon">${ti('target-arrow')}</span> ${focusActionLabel}</button>` : ''}
+                                    <button class="sr-act-btn" data-role="${escapeHTML(role)}" data-module="${escapeHTML(mod)}" onclick="window._repeatRoleFromControl(this)"><span class="sr-act-icon">${ti('refresh')}</span> Repeat or Change Setup</button>
                                     <button class="sr-act-btn" onclick="window.nav('setup')"><span class="sr-act-icon">${ti('target-arrow')}</span> Start New Session</button>
                                     <button class="sr-act-btn" onclick="window._exportSessionPDF()"><span class="sr-act-icon">${ti('file-download')}</span> Export PDF</button>
                                     <button class="sr-act-btn" onclick="window.nav('history')"><span class="sr-act-icon">${ti('arrow-left')}</span> Back to History</button>
@@ -4714,10 +6774,14 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
         `;
 
+        // A history card may have been scrolled into view before it was
+        // opened. A fresh report is a new page, so begin at its masthead.
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+
         // Animate score ring fill
         setTimeout(() => {
             const fill = document.getElementById('sr-ring-fill');
-            if (fill) fill.setAttribute('stroke-dashoffset', circ * (1 - score / 100));
+            if (fill && hasScore) fill.setAttribute('stroke-dashoffset', circ * (1 - score / 100));
             // Animate metric bars
             document.querySelectorAll('.sr-sm-fill').forEach(el => { el.style.width = el.getAttribute('data-w'); });
         }, 200);
@@ -4749,26 +6813,39 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        window._srToggleIdealFromControl = (idx, button) => window._srToggleIdeal(
+            idx,
+            button?.dataset.question || '',
+            button?.dataset.role || '',
+            button?.dataset.module || 'general',
+        );
+
+        window._repeatRoleFromControl = (button) => {
+            state.targetRole = button?.dataset.role || 'General Role';
+            state.selectedModule = button?.dataset.module || 'general';
+            window.nav('setup');
+        };
+
         // PDF Export
         window._exportSessionPDF = () => {
             const pairsHtml = pairs.map((pair, i) => `
                 <div style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid;">
                     <div style="background:#f8fafc;padding:14px 18px;border-bottom:1px solid #e2e8f0;">
                         <span style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;">Question ${i + 1}</span>
-                        <p style="margin:6px 0 0;color:#1e293b;font-size:13px;line-height:1.6;">${pair.q}</p>
+                        <p style="margin:6px 0 0;color:#1e293b;font-size:13px;line-height:1.6;">${escapeHTML(pair.q)}</p>
                     </div>
                     <div style="padding:14px 18px;">
                         <span style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;">Your Answer</span>
-                        <p style="margin:6px 0 0;color:#334155;font-size:13px;line-height:1.6;">${pair.a}</p>
+                        <p style="margin:6px 0 0;color:#334155;font-size:13px;line-height:1.6;">${escapeHTML(pair.a)}</p>
                     </div>
                 </div>`).join('');
 
-            const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Interview Report - ${role}</title>
+            const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Interview Report - ${escapeHTML(role)}</title>
             <style>*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1e293b;margin:0;padding:40px;max-width:800px;margin:0 auto}@media print{body{padding:20px}}</style></head><body>
             <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;padding-bottom:24px;border-bottom:2px solid #e2e8f0;">
                 <div>
                     <div style="font-size:11px;font-weight:700;color:#b89531;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;">Interview Report Card</div>
-                    <h1 style="margin:0 0 4px;font-size:26px;font-weight:800;color:#0f172a;">${role}</h1>
+                    <h1 style="margin:0 0 4px;font-size:26px;font-weight:800;color:#0f172a;">${escapeHTML(role)}</h1>
                     <p style="margin:0;font-size:13px;color:#64748b;">${dateStr} - ${durationMin} min - ${pairs.length} questions</p>
                 </div>
                 <div style="text-align:center;background:${g.c}15;border:2px solid ${g.c}40;border-radius:12px;padding:12px 20px;">
@@ -4832,6 +6909,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 .ptf-gen-btn::before{content:'';position:absolute;inset:1px;border-radius:calc(.75rem - 1px);background:linear-gradient(178deg,rgba(255,255,255,.19) 0%,rgba(255,255,255,0) 100%);z-index:0}
                 .ptf-gen-btn::after{content:'';position:absolute;inset:2px;border-radius:calc(.75rem - 2px);background:radial-gradient(65% 65% at 50% 100%,rgba(223,113,255,.8) 0%,rgba(223,113,255,0) 100%),linear-gradient(0deg,#7a5af8,#7a5af8);z-index:0}
                 .ptf-gen-btn:active{transform:scale(.97)}
+                .ptf-network-note{margin:10px 0 0;color:var(--t-muted);font-size:11px;line-height:1.5}
                 .ptf-gen-inner{z-index:2;position:relative;color:white;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:600;line-height:1.5;font-family:inherit}
                 .ptf-results{margin-top:28px;display:none}
                 .ptf-results.show{display:block}
@@ -4859,65 +6937,106 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="ptf-wrap">
                 <div class="ptf-orbs"><div class="ptf-orb ptf-o1"></div><div class="ptf-orb ptf-o2"></div><div class="ptf-orb ptf-o3"></div></div>
                 ${starsHTML('ptf-stars')}
-                <div class="ptf-page">
+                <div class="ptf-page ptf-review-room">
                     <button class="ptf-back" onclick="window.nav('hero')">${ti('arrow-left')} Back to Home</button>
                     <div class="ptf-hero-ico">${ti('search')}</div>
-                    <div class="ptf-title">Portfolio Deep-Dive</div>
-                    <div class="ptf-sub">Paste your portfolio, GitHub or LinkedIn URL - the AI reads your work and generates tailored interview questions specific to <em>your</em> projects, skills and experience.</div>
-                    <div class="ptf-pill">${ti('world')} Requires internet to fetch URL - Runs locally via Ollama</div>
+                    <div class="ptf-heading">
+                        <div>
+                            <div class="ptf-eyebrow">Private project review</div>
+                            <div class="ptf-title">Put your work under examination.</div>
+                            <div class="ptf-sub">Bring one public portfolio, project, or profile. The local coach will pull out the decisions an interviewer is most likely to challenge.</div>
+                        </div>
+                        <div class="ptf-pill">${ti('lock')} Read locally · nothing is published</div>
+                    </div>
 
-                    <div class="ptf-card">
+                    <div class="ptf-workspace">
+                    <section class="ptf-card ptf-intake">
+                        <div class="ptf-intake-head"><span>Source file</span><b>01</b></div>
                         <div class="ptf-fw">
-                            <label class="ptf-flbl">Portfolio / GitHub / LinkedIn URL *</label>
+                            <label class="ptf-flbl" for="ptf-url">Portfolio, GitHub, or public profile</label>
                             <div class="ptf-url-row">
-                                <input class="ptf-inp" id="ptf-url" type="url" placeholder="https://yourname.dev  or  github.com/username">
-                                <button class="ptf-prev-btn" onclick="document.getElementById('ptf-preview').classList.toggle('open')">Preview</button>
+                                <input class="ptf-inp" id="ptf-url" type="url" placeholder="https://yourname.dev">
+                                <button class="ptf-prev-btn" onclick="document.getElementById('ptf-preview').classList.toggle('open')">What gets read</button>
                             </div>
-                            <div class="ptf-preview" id="ptf-preview">Fetched content will appear here after generation...</div>
+                            <div class="ptf-preview" id="ptf-preview">The coach reads public page text—project names, responsibilities, tools, outcomes, and case-study details. Scripts, navigation, and decorative content are ignored.</div>
+                            <p class="ptf-network-note">Opening this public URL is the app’s only optional outbound content request. Nothing is uploaded to an Interview Chameleon server.</p>
                         </div>
                         <div class="ptf-2col">
                             <div>
-                                <label class="ptf-flbl">Target Role *</label>
-                                <input class="ptf-inp" id="ptf-role" type="text" placeholder="e.g. Senior Frontend Engineer">
+                                <label class="ptf-flbl" for="ptf-role">Interviewer’s lens</label>
+                                <input class="ptf-inp" id="ptf-role" type="text" placeholder="Senior Product Designer">
                             </div>
                             <div>
-                                <label class="ptf-flbl">Number of Questions</label>
-                                <div class="ptf-chips" id="ptf-chips">
-                                    <button class="ptf-chip" onclick="window._ptfCount(5,this)">5</button>
-                                    <button class="ptf-chip on" onclick="window._ptfCount(8,this)">8</button>
-                                    <button class="ptf-chip" onclick="window._ptfCount(10,this)">10</button>
-                                    <button class="ptf-chip" onclick="window._ptfCount(15,this)">15</button>
-                                    <button class="ptf-chip" onclick="window._ptfCount(20,this)">20</button>
+                                <div class="ptf-flbl" id="ptf-depth-label">Depth of examination</div>
+                                <div class="ptf-chips" id="ptf-chips" role="group" aria-labelledby="ptf-depth-label">
+                                    <button type="button" class="ptf-chip" aria-pressed="false" onclick="window._ptfCount(5,this)">Brief · 5</button>
+                                    <button type="button" class="ptf-chip on" aria-pressed="true" onclick="window._ptfCount(8,this)">Standard · 8</button>
+                                    <button type="button" class="ptf-chip" aria-pressed="false" onclick="window._ptfCount(12,this)">Deep · 12</button>
                                 </div>
                             </div>
                         </div>
                         <div class="ptf-gen-wrap">
                             <button class="ptf-gen-btn" id="ptf-gen-btn" onclick="window._ptfGenerate()">
-                                <span class="ptf-gen-inner">${ti('bolt')} Generate Interview Questions</span>
+                                <span class="ptf-gen-inner">Prepare the interrogation ${ti('arrow-right')}</span>
                             </button>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="ptf-results" id="ptf-results">
-                        <div class="ptf-res-hdr">
-                            <div class="ptf-res-title" id="ptf-res-title"></div>
-                            <div class="ptf-res-acts">
-                                <button class="ptf-act" onclick="window._ptfGenerate()">${ti('refresh')} Regenerate</button>
+                    <section class="ptf-caseboard">
+                        <aside class="ptf-concept-note">
+                            <span>THE PROJECT WALL</span>
+                            <h2>Know the story behind the work.</h2>
+                            <p>An interviewer rarely cares about the gallery view alone. They want the decisions underneath it.</p>
+                            <div class="ptf-story-grid">
+                                <div><b>01</b><strong>Problem</strong><small>What needed to change?</small></div>
+                                <div><b>02</b><strong>Decision</strong><small>What did you choose—and why?</small></div>
+                                <div><b>03</b><strong>Trade-off</strong><small>What did the constraint cost?</small></div>
+                                <div><b>04</b><strong>Result</strong><small>What became measurably better?</small></div>
                             </div>
+                            <em>Your tailored question slips will be pinned here.</em>
+                        </aside>
+
+                        <div class="ptf-results" id="ptf-results">
+                            <div class="ptf-res-hdr">
+                                <div><span>Prepared from the source</span><div class="ptf-res-title" id="ptf-res-title"></div></div>
+                                <div class="ptf-res-acts">
+                                    <button class="ptf-act" onclick="window._ptfGenerate()">${ti('refresh')} Examine again</button>
+                                </div>
+                            </div>
+                            <div class="ptf-q-list" id="ptf-q-list"></div>
                         </div>
-                        <div class="ptf-q-list" id="ptf-q-list"></div>
+                    </section>
+
+                    <aside class="ptf-method-note">
+                        <span>REVIEW METHOD</span>
+                        <h3>Defend the decisions, not the decoration.</h3>
+                        <ul>
+                            <li>Name the constraint before the solution.</li>
+                            <li>Separate your contribution from the team’s.</li>
+                            <li>Use evidence for the result.</li>
+                        </ul>
+                        <div class="ptf-method-rule"></div>
+                        <p><strong>Useful answer shape</strong>Problem → choice → trade-off → result.</p>
+                        <div class="ptf-local-stamp">LOCAL REVIEW<br><b>PRIVATE</b></div>
+                    </aside>
                     </div>
                 </div>
             </div>
         `;
+
+        requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }));
 
         // Init stars background
         initStarsBg('ptf-stars');
 
         window._ptfCount = (n, btn) => {
             ptfCount = n;
-            document.querySelectorAll('.ptf-chip').forEach(b => b.classList.remove('on'));
+            document.querySelectorAll('.ptf-chip').forEach(b => {
+                b.classList.remove('on');
+                b.setAttribute('aria-pressed', 'false');
+            });
             btn.classList.add('on');
+            btn.setAttribute('aria-pressed', 'true');
         };
 
         window._ptfGenerate = async () => {
@@ -4926,7 +7045,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const url = document.getElementById('ptf-url')?.value?.trim();
             const role = document.getElementById('ptf-role')?.value?.trim() || 'your target role';
-            const model = state.selectedModel || 'qwen2.5:7b';
+            const model = state.selectedModel || DEFAULT_MODEL_ID;
             const btn = document.getElementById('ptf-gen-btn');
             const results = document.getElementById('ptf-results');
             const list = document.getElementById('ptf-q-list');
@@ -4940,7 +7059,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             results.classList.add('show');
             title.textContent = ptfCount + ' questions for ' + role;
-            btn.querySelector('.ptf-gen-inner').innerHTML = `${ti('sparkles')} Generating...`;
+            btn.querySelector('.ptf-gen-inner').innerHTML = `${ti('sparkles')} Examining the work...`;
             btn.disabled = true;
 
             // Show skeletons
@@ -4950,14 +7069,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let fullText = '';
             try {
+                const preferenceResponse = await fetch('/api/preferences');
+                const preferenceData = preferenceResponse.ok ? await preferenceResponse.json() : {};
+                let networkConsent = Boolean(preferenceData.preferences?.portfolio_network_consent);
+                if (!networkConsent) {
+                    networkConsent = window.confirm('Allow Interview Chameleon to request this public portfolio page? The page request goes directly from this computer to that website.');
+                    if (!networkConsent) throw new Error('Portfolio network access was not enabled.');
+                    await fetch('/api/preferences', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ portfolio_network_consent: true }),
+                    });
+                }
                 const res = await fetch('/api/portfolio-analysis', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model, portfolio_url: url, target_role: role, question_count: ptfCount })
+                    body: JSON.stringify({ model, portfolio_url: url, target_role: role, question_count: ptfCount, network_consent: networkConsent })
                 });
                 if (!res.ok) {
                     const err = await res.json();
-                    throw new Error(err.detail || 'Server error');
+                    throw new Error(err.error?.message || err.detail || 'Server error');
                 }
 
                 const reader = res.body.getReader();
@@ -4970,12 +7101,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 window._ptfRenderQs(fullText);
             } catch (e) {
-                list.innerHTML = `<div style="padding:20px;background:rgba(240,60,60,.1);border:1px solid rgba(240,60,60,.2);border-radius:14px;color:rgba(255,120,120,.9);font-size:13px">${ti('circle-x')} ${escapeHTML(e.message)}</div>`;
+                list.innerHTML = `<div class="ptf-error">${ti('circle-x')} ${escapeHTML(e.message)}</div>`;
             }
 
             ptfGenerating = false;
             btn.disabled = false;
-            btn.querySelector('.ptf-gen-inner').innerHTML = `${ti('refresh')} Regenerate`;
+            btn.querySelector('.ptf-gen-inner').innerHTML = `Examine again ${ti('arrow-right')}`;
         };
 
         window._ptfRenderQs = (text) => {
@@ -4987,17 +7118,55 @@ document.addEventListener('DOMContentLoaded', () => {
                 const qMatch = block.match(/^\d+\.\s+([\s\S]+?)(?:\nNOTE:|$)/);
                 const noteMatch = block.match(/NOTE:\s*([\s\S]+)/);
                 if (!qMatch) return;
-                const question = qMatch[1].trim();
-                const note = noteMatch ? noteMatch[1].trim() : '';
+                const question = escapeHTML(qMatch[1].trim());
+                const note = noteMatch ? escapeHTML(noteMatch[1].trim()) : '';
                 html += '<div class="ptf-qi">'
                     + '<div class="ptf-qn">' + (i + 1) + '</div>'
                     + '<div class="ptf-qb">'
                     + '<div class="ptf-qt">' + question + '</div>'
-                    + (note ? '<div class="ptf-qnote">' + ti('bulb') + ' ' + note + '</div>' : '')
-                    + '<div class="ptf-qacts"><button class="ptf-qa save" onclick="navigator.clipboard.writeText(this.closest(\'.ptf-qi\').querySelector(\'.ptf-qt\').textContent)">' + ti('star') + ' Save to Bank</button><button class="ptf-qa" onclick="navigator.clipboard.writeText(this.closest(\'.ptf-qi\').querySelector(\'.ptf-qt\').textContent)">' + ti('clipboard') + ' Copy</button></div>'
+                    + (note ? '<div class="ptf-qnote"><span>Source note</span>' + note + '</div>' : '')
+                    + '<div class="ptf-qacts"><button class="ptf-qa save" onclick="window._ptfSaveQuestion(this)">' + ti('star') + ' File in Practice Library</button><button class="ptf-qa" onclick="window._ptfCopyQuestion(this)">' + ti('clipboard') + ' Copy prompt</button></div>'
                     + '</div></div>';
             });
-            list.innerHTML = html || '<div style="padding:16px;color:var(--t-muted);font-size:13px">Generating questions...</div>';
+            list.innerHTML = html || '<div class="ptf-generating">Preparing the question slips...</div>';
+        };
+
+        window._ptfCopyQuestion = async (btn) => {
+            const question = btn.closest('.ptf-qi')?.querySelector('.ptf-qt')?.textContent || '';
+            await navigator.clipboard.writeText(question);
+            const original = btn.innerHTML;
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.innerHTML = original; }, 1200);
+        };
+
+        window._ptfSaveQuestion = async (btn) => {
+            if (btn.disabled) return;
+            const item = btn.closest('.ptf-qi');
+            const question = item?.querySelector('.ptf-qt')?.textContent || '';
+            const note = item?.querySelector('.ptf-qnote')?.textContent?.replace(/^Source note\s*/, '') || '';
+            const role = document.getElementById('ptf-role')?.value?.trim() || 'Portfolio';
+            btn.disabled = true;
+            btn.textContent = 'Filing...';
+            try {
+                const response = await fetch('/api/questions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: crypto.randomUUID(),
+                        category: 'Case Study',
+                        text: question,
+                        difficulty: 'Medium',
+                        tags: ['Portfolio', role],
+                        answer: note
+                    })
+                });
+                if (!response.ok) throw new Error('Could not file question');
+                btn.textContent = 'Filed in Library ✓';
+                btn.classList.add('filed');
+            } catch (error) {
+                btn.disabled = false;
+                btn.textContent = 'Try filing again';
+            }
         };
     }
 
@@ -5005,7 +7174,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const MOD_COLOR = {
             'Roleplay': '#c084fc', 'Visual': '#60a5fa',
             'Technical': '#22d3ee', 'General': '#84cc16',
-            'Case Study': '#a78bfa', 'Salary': '#34d399'
+            'Case Study': '#a78bfa', 'Salary': '#34d399',
+            'FAANG': '#ad3f28'
         };
         const DIFF_COLOR = { 'Easy': '#4ade80', 'Medium': '#facc15', 'Hard': '#f87171' };
 
@@ -5160,12 +7330,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- ORBS -->
             <div class="qb-orbs"><div class="qb-orb qb-orb1"></div><div class="qb-orb qb-orb2"></div><div class="qb-orb qb-orb3"></div></div>
 
-            <div class="qb-page" x-data="questionBank()" x-init="loadQuestions()">
+            <div class="qb-page qb-catalogue" x-data="questionBank()" x-init="initialize()">
               <!-- Top bar -->
               <div class="qb-top">
                 <button class="qb-back" onclick="window.nav('hero')">&#8592; Back to Home</button>
                 <div class="qb-top-actions">
-                  <button type="button" class="qb-gbtn" @click="showGenForm = !showGenForm; showAddForm = false">
+                  <button type="button" class="qb-gbtn" :aria-expanded="showGenForm || showGenPreview" aria-controls="qb-generate-panel" @click="showGenForm = !showGenForm; showAddForm = false">
                     <span class="qb-fold"></span>
                     <div class="qb-pts">
                       <i class="pt"></i><i class="pt"></i><i class="pt"></i><i class="pt"></i><i class="pt"></i>
@@ -5174,28 +7344,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span class="qb-gbtn-inner">
                       <svg class="qb-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                         <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
-                      </svg>Generate with AI
+                      </svg>Draft a question
                     </span>
                   </button>
-                  <button class="qb-add-btn" @click="resetForm(); showAddForm = !showAddForm; showGenForm = false">+ Add Question</button>
+                  <button type="button" class="qb-add-btn" :aria-expanded="showAddForm" aria-controls="qb-add-panel" @click="resetForm(); showAddForm = !showAddForm; showGenForm = false">+ Write a card</button>
                 </div>
               </div>
 
               <!-- Page heading -->
               <div class="qb-head">
-                <div class="qb-title">Question Bank</div>
-                <div class="qb-sub">Browse, filter, and favorite interview questions. Add your own or generate with AI.</div>
+                <div class="qb-head-copy">
+                  <div class="qb-eyebrow">The coach's card catalogue</div>
+                  <div class="qb-title">Questions worth rehearsing.</div>
+                  <div class="qb-sub">Pull a prompt from the files, study the coach's note, and keep the questions you want to revisit.</div>
+                </div>
+                <div class="qb-head-mark" aria-hidden="true">
+                  <span>Private practice file</span>
+                  <b>Local</b>
+                </div>
               </div>
 
               <!-- AI Generate panel -->
-              <div class="qb-gen-panel" :class="showGenForm && !showGenPreview ? 'open' : ''">
+              <div class="qb-gen-panel" id="qb-generate-panel" :class="showGenForm && !showGenPreview ? 'open' : ''">
                 <div class="qb-gen-title">&#10024; Generate with AI</div>
                 <div class="qb-gen-row">
                   <div>
                     <div class="qb-gen-label">Module</div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
-                      <template x-for="m in ['Roleplay','Visual','Technical','General','Case Study','Salary']" :key="m">
-                        <button class="qb-gen-chip" :class="genModule === m ? 'on' : ''" @click="genModule = m" x-text="m"></button>
+                      <template x-for="m in ['Roleplay','Visual','Technical','FAANG','General','Case Study','Salary']" :key="m">
+                        <button type="button" class="qb-gen-chip" :class="genModule === m ? 'on' : ''" :aria-pressed="genModule === m" @click="genModule = m" x-text="m"></button>
                       </template>
                     </div>
                   </div>
@@ -5203,21 +7380,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="qb-gen-label">Difficulty</div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
                       <template x-for="d in ['Easy','Medium','Hard']" :key="d">
-                        <button class="qb-gen-chip" :class="genLevel === d ? 'on' : ''" @click="genLevel = d" x-text="d"></button>
+                        <button type="button" class="qb-gen-chip" :class="genLevel === d ? 'on' : ''" :aria-pressed="genLevel === d" @click="genLevel = d" x-text="d"></button>
                       </template>
                     </div>
                   </div>
                   <div>
-                    <div class="qb-gen-label">Topic Hint <span style="color:var(--t-muted);font-size:10px;text-transform:none">(optional)</span></div>
-                    <input class="qb-gen-input" x-model="genTopic" placeholder="e.g. System Design, Leadership...">
+                    <label class="qb-gen-label" for="qb-gen-topic">Topic Hint <span style="color:var(--t-muted);font-size:10px;text-transform:none">(optional)</span></label>
+                    <input class="qb-gen-input" id="qb-gen-topic" x-model="genTopic" placeholder="e.g. System Design, Leadership...">
                   </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:10px">
-                  <button class="qb-gen-go" @click="generateQuestion()" :disabled="generating">
+                  <button type="button" class="qb-gen-go" @click="generateQuestion()" :disabled="generating">
                     <span x-show="generating" class="qb-spinner" style="margin-right:6px"></span>
                     <span x-text="generating ? 'Generating...' : 'Generate'"></span>
                   </button>
-                  <button class="qb-gen-cancel" @click="showGenForm = false">Cancel</button>
+                  <button type="button" class="qb-gen-cancel" @click="showGenForm = false">Cancel</button>
                 </div>
                 <!-- Preview -->
                 <div class="qb-gen-preview" :class="showGenPreview ? 'open' : ''">
@@ -5232,25 +7409,26 @@ document.addEventListener('DOMContentLoaded', () => {
                   </div>
                   <div class="qb-gen-preview-tip" x-show="genPreview.answer">&#128161; <strong>Tip:</strong> <span x-text="genPreview.answer"></span></div>
                   <div style="display:flex;align-items:center;gap:10px">
-                    <button class="qb-gen-confirm" @click="confirmGenerated()">Add to Bank</button>
-                    <button class="qb-gen-go" style="background:var(--t-border);border:1px solid var(--t-border2)" @click="generateQuestion()" :disabled="generating">
+                    <button type="button" class="qb-gen-confirm" @click="confirmGenerated()">Add to Bank</button>
+                    <button type="button" class="qb-gen-go" style="background:var(--t-border);border:1px solid var(--t-border2)" @click="generateQuestion()" :disabled="generating">
                       <span x-text="generating ? 'Regenerating...' : 'Regenerate'"></span>
                     </button>
-                    <button class="qb-gen-cancel" @click="showGenPreview = false; showGenForm = true">Dismiss</button>
+                    <button type="button" class="qb-gen-cancel" @click="showGenPreview = false; showGenForm = true">Dismiss</button>
                   </div>
                 </div>
               </div>
 
               <!-- Add Question panel -->
-              <div class="qb-add-panel" :class="showAddForm ? 'open' : ''">
+              <div class="qb-add-panel" id="qb-add-panel" :class="showAddForm ? 'open' : ''">
                 <div class="qb-add-title" x-text="editingId ? 'Edit Question' : 'Add Custom Question'"></div>
-                <textarea class="qb-add-input qb-add-textarea" x-model="newQText" placeholder="Enter your interview question..." style="width:100%;margin-bottom:16px"></textarea>
+                <label class="sr-only" for="qb-new-question">Interview question</label>
+                <textarea class="qb-add-input qb-add-textarea" id="qb-new-question" x-model="newQText" placeholder="Enter your interview question..." style="width:100%;margin-bottom:16px"></textarea>
                 <div class="qb-add-grid">
                   <div>
                     <div class="qb-add-label">Module</div>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
-                      <template x-for="m in ['Roleplay','Visual','Technical','General','Case Study','Salary']" :key="m">
-                        <button class="qb-add-tgl" :class="newQModule === m ? 'on' : ''" @click="newQModule = m" x-text="m"></button>
+                      <template x-for="m in ['Roleplay','Visual','Technical','FAANG','General','Case Study','Salary']" :key="m">
+                        <button type="button" class="qb-add-tgl" :class="newQModule === m ? 'on' : ''" :aria-pressed="newQModule === m" @click="newQModule = m" x-text="m"></button>
                       </template>
                     </div>
                   </div>
@@ -5258,141 +7436,171 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="qb-add-label">Difficulty</div>
                     <div style="display:flex;gap:6px">
                       <template x-for="d in ['Easy','Medium','Hard']" :key="d">
-                        <button class="qb-add-tgl" :class="newQLevel === d ? 'on' : ''" @click="newQLevel = d" x-text="d"></button>
+                        <button type="button" class="qb-add-tgl" :class="newQLevel === d ? 'on' : ''" :aria-pressed="newQLevel === d" @click="newQLevel = d" x-text="d"></button>
                       </template>
                     </div>
                   </div>
                   <div>
-                    <div class="qb-add-label">Category / Tag</div>
-                    <input class="qb-add-input" x-model="newQCategory" placeholder="e.g. Leadership">
+                    <label class="qb-add-label" for="qb-new-category">Category / Tag</label>
+                    <input class="qb-add-input" id="qb-new-category" x-model="newQCategory" placeholder="e.g. Leadership">
                   </div>
                 </div>
                 <div>
-                  <div class="qb-add-label">Preparation Tip <span style="color:var(--t-muted);font-size:10px;text-transform:none">(optional)</span></div>
-                  <input class="qb-add-input" x-model="newQTip" placeholder="A helpful tip for answering this question" style="margin-bottom:16px">
+                  <label class="qb-add-label" for="qb-new-tip">Preparation Tip <span style="color:var(--t-muted);font-size:10px;text-transform:none">(optional)</span></label>
+                  <input class="qb-add-input" id="qb-new-tip" x-model="newQTip" placeholder="A helpful tip for answering this question" style="margin-bottom:16px">
                 </div>
                 <div style="display:flex;align-items:center;gap:10px">
-                  <button class="qb-add-save" @click="submitQuestion()" :disabled="!newQText.trim()">
+                  <button type="button" class="qb-add-save" @click="submitQuestion()" :disabled="!newQText.trim()">
                     <span x-text="editingId ? 'Update Question' : 'Save Question'"></span>
                   </button>
-                  <button class="qb-gen-cancel" @click="showAddForm = false; resetForm()">Cancel</button>
+                  <button type="button" class="qb-gen-cancel" @click="showAddForm = false; resetForm()">Cancel</button>
                 </div>
               </div>
 
-              <!-- Body: Sidebar + Main -->
+              <!-- Body: catalogue index + question file + coach's pull list -->
               <div class="qb-body">
-                <!-- SIDEBAR -->
                 <aside class="qb-sidebar">
                   <div class="qb-sb-section">
-                    <div class="qb-sb-title">Module</div>
-                    <button class="qb-sb-chip" :class="activeModule === 'All Modules' ? 'on' : ''" @click="activeModule = 'All Modules'">
-                      <span class="cdot" style="background:var(--t-muted)"></span> All Modules
+                    <div class="qb-sb-kicker">Catalogue index</div>
+                    <div class="qb-sb-title">Interview room</div>
+                    <button type="button" class="qb-sb-chip" :class="activeModule === 'All Modules' ? 'on' : ''" :aria-pressed="activeModule === 'All Modules'" @click="activeModule = 'All Modules'">
+                      <span class="qb-index-no">00</span> Complete file
                       <span class="ccnt" x-text="questions.length"></span>
                     </button>
-                    <template x-for="mod in ['Roleplay','Visual','Technical','General','Case Study','Salary']" :key="mod">
-                      <button class="qb-sb-chip" :class="activeModule === mod ? 'on' : ''" @click="activeModule = mod">
-                        <span class="cdot" :style="'background:' + (window._qbModColor[mod]||'#84cc16')"></span>
+                    <template x-for="(mod, index) in ['Roleplay','Visual','Technical','FAANG','General','Case Study','Salary']" :key="mod">
+                      <button type="button" class="qb-sb-chip" :class="activeModule === mod ? 'on' : ''" :aria-pressed="activeModule === mod" @click="activeModule = mod">
+                        <span class="qb-index-no" x-text="formatIndex(index)"></span>
                         <span x-text="mod"></span>
-                        <span class="ccnt" x-text="questions.filter(q => q.category === mod).length"></span>
+                        <span class="ccnt" x-text="moduleQuestionCount(mod)"></span>
                       </button>
                     </template>
                   </div>
                   <div class="qb-divider"></div>
                   <div class="qb-sb-section">
-                    <div class="qb-sb-title">Difficulty</div>
-                    <button class="qb-sb-chip" :class="activeLevel === 'All Levels' ? 'on' : ''" @click="activeLevel = 'All Levels'">
-                      <span class="cdot" style="background:var(--t-muted)"></span> All Levels
+                    <div class="qb-sb-title">Pressure</div>
+                    <button type="button" class="qb-sb-chip" :class="activeLevel === 'All Levels' ? 'on' : ''" :aria-pressed="activeLevel === 'All Levels'" @click="activeLevel = 'All Levels'">
+                      <span class="qb-index-mark">—</span> Any pressure
                     </button>
                     <template x-for="d in ['Easy','Medium','Hard']" :key="d">
-                      <button class="qb-sb-chip" :class="activeLevel === d ? 'on' : ''" @click="activeLevel = d">
-                        <span class="cdot" :style="'background:' + (window._qbDiffColor[d]||'#facc15')"></span>
+                      <button type="button" class="qb-sb-chip" :class="activeLevel === d ? 'on' : ''" :aria-pressed="activeLevel === d" @click="activeLevel = d">
+                        <span class="qb-index-mark" x-text="d === 'Easy' ? 'I' : d === 'Medium' ? 'II' : 'III'"></span>
                         <span x-text="d"></span>
                       </button>
                     </template>
                   </div>
                   <div class="qb-divider"></div>
                   <div class="qb-sb-section">
-                    <div class="qb-sb-title">Special</div>
-                    <button class="qb-sb-chip" :class="showFavorites ? 'on' : ''" @click="showFavorites = !showFavorites">
-                      <span class="cdot" style="background:#facc15"></span> &#11088; Favorites Only
+                    <div class="qb-sb-title">Filed apart</div>
+                    <button type="button" class="qb-sb-chip" :class="showFavorites ? 'on' : ''" :aria-pressed="showFavorites" @click="showFavorites = !showFavorites">
+                      <span class="qb-index-mark">★</span> Kept questions
                     </button>
-                    <button class="qb-sb-chip" :class="showCustomOnly ? 'on' : ''" @click="showCustomOnly = !showCustomOnly">
-                      <span class="cdot" style="background:hsl(38,92%,50%)"></span> Custom Only
+                    <button type="button" class="qb-sb-chip" :class="showCustomOnly ? 'on' : ''" :aria-pressed="showCustomOnly" @click="showCustomOnly = !showCustomOnly">
+                      <span class="qb-index-mark">✎</span> Written by you
                     </button>
                   </div>
                   <div class="qb-divider"></div>
                   <div class="qb-sb-section">
-                    <div class="qb-sb-title">Tags</div>
+                    <div class="qb-sb-title">Subject tabs</div>
                     <div class="qb-tag-chips">
-                      <button class="qb-tag-chip" :class="activeCategory === 'All Categories' ? 'on' : ''" @click="activeCategory = 'All Categories'">All</button>
+                      <button type="button" class="qb-tag-chip" :class="activeCategory === 'All Categories' ? 'on' : ''" :aria-pressed="activeCategory === 'All Categories'" @click="activeCategory = 'All Categories'">All</button>
                       <template x-for="cat in allCategories" :key="cat">
-                        <button class="qb-tag-chip" :class="activeCategory === cat ? 'on' : ''" @click="activeCategory = cat" x-text="cat"></button>
+                        <button type="button" class="qb-tag-chip" :class="activeCategory === cat ? 'on' : ''" :aria-pressed="activeCategory === cat" @click="activeCategory = cat" x-text="cat"></button>
                       </template>
                     </div>
                   </div>
                 </aside>
 
-                <!-- MAIN -->
                 <div class="qb-main">
+                  <div class="qb-file-head">
+                    <div>
+                      <span class="qb-file-label">Open drawer</span>
+                      <h2 x-text="activeModule === 'All Modules' ? 'All rehearsal questions' : activeModule"></h2>
+                    </div>
+                    <div class="qb-count">
+                      <span x-show="loading">Opening the drawer...</span>
+                      <span x-show="!loading" x-text="filteredQuestions.length + ' cards filed · showing ' + visibleQuestions.length"></span>
+                    </div>
+                  </div>
                   <div class="qb-search-row">
                     <div class="qb-search-wrap">
-                      <span class="qb-search-ico">&#128269;</span>
-                      <input class="qb-search-input" x-model="searchTerm" placeholder="Search questions...">
+                      <span class="qb-search-ico">⌕</span>
+                      <label class="sr-only" for="qb-search">Search the question catalogue</label>
+                      <input class="qb-search-input" id="qb-search" x-model="searchTerm" placeholder="Find a question, skill, or subject...">
                     </div>
-                    <button class="qb-sort-btn" :class="sortCustomFirst ? 'on' : ''" @click="toggleSort()">&#8597; <span x-text="sortCustomFirst ? 'Custom First' : 'Default Order'"></span></button>
-                  </div>
-                  <div class="qb-count">
-                    <span x-show="loading">Loading questions...</span>
-                    <span x-show="!loading" x-text="filteredQuestions.length + ' questions'"></span>
+                    <button type="button" class="qb-sort-btn" :class="sortCustomFirst ? 'on' : ''" :aria-pressed="sortCustomFirst" @click="toggleSort()"><span x-text="sortCustomFirst ? 'Your cards first' : 'Sort the drawer'"></span></button>
                   </div>
                   <div class="qb-list">
-                    <template x-for="q in filteredQuestions" :key="q.id">
-                      <div class="qb-card" :class="expanded === q.id ? 'expanded' : ''" @click="expanded = expanded === q.id ? null : q.id">
-                        <div :style="'position:absolute;left:0;top:0;bottom:0;width:3px;background:' + (window._qbModColor[q.category]||'#84cc16') + ';border-radius:3px 0 0 3px'"></div>
+                    <template x-for="(q, index) in visibleQuestions" :key="q.id">
+                      <article class="qb-card" :class="expanded === q.id ? 'expanded' : ''" :data-qb-visible-index="index">
                         <div class="qb-card-head">
-                          <button class="qb-fav" @click.stop="toggleFavorite(q.id)" title="Favorite">
-                            <span x-text="favorites.includes(q.id) ? '&#11088;' : '&#9734;'"></span>
+                        <div class="qb-card-no" x-text="formatIndex(index)"></div>
+                          <button type="button" class="qb-fav" @click="toggleFavorite(q.id)" :aria-pressed="favorites.includes(q.id)" title="Keep this question">
+                            <span x-text="favorites.includes(q.id) ? '★ Filed' : '☆ Keep'"></span>
                           </button>
                           <div class="qb-q-main">
                             <div class="qb-q-text" x-text="q.text"></div>
                             <div class="qb-badges">
-                              <span class="qb-badge" :style="'color:' + (window._qbModColor[q.category]||'#84cc16') + ';background:' + (window._qbModColor[q.category]||'#84cc16') + '18;border-color:' + (window._qbModColor[q.category]||'#84cc16') + '40'" x-text="q.category"></span>
-                              <span class="qb-badge" :style="'color:' + (window._qbDiffColor[q.difficulty]||'#facc15') + ';background:' + (window._qbDiffColor[q.difficulty]||'#facc15') + '18;border-color:' + (window._qbDiffColor[q.difficulty]||'#facc15') + '40'" x-text="q.difficulty"></span>
+                              <span class="qb-badge qb-module-stamp" x-text="q.category"></span>
+                              <span class="qb-badge qb-difficulty-stamp" x-text="q.difficulty + ' pressure'"></span>
                               <template x-for="tag in (q.tags||[])" :key="tag">
-                                <span class="qb-badge" style="border-color:var(--t-border2);background:var(--t-surface-hover);color:var(--t-muted)" x-text="tag"></span>
+                                <span class="qb-badge qb-tag-stamp" x-text="tag"></span>
                               </template>
                               <template x-if="!q.is_seed">
-                                <span class="qb-badge" style="border-color:hsla(38,92%,50%,.3);background:hsla(38,92%,50%,.08);color:hsl(38,92%,50%)">Custom</span>
+                                <span class="qb-badge qb-custom-stamp">Your card</span>
                               </template>
                             </div>
                           </div>
                           <div class="qb-card-actions">
                             <template x-if="!q.is_seed">
-                              <button class="qb-icon-btn" @click.stop="startEdit(q)" title="Edit">&#9998;</button>
+                              <button type="button" class="qb-icon-btn" @click="startEdit(q)" title="Edit">Edit</button>
                             </template>
                             <template x-if="!q.is_seed">
-                              <button class="qb-icon-btn del" @click.stop="deleteQuestion(q.id)" title="Delete">&#128465;</button>
+                              <button type="button" class="qb-icon-btn del" @click="deleteQuestion(q.id)" title="Delete">Remove</button>
                             </template>
-                            <button class="qb-icon-btn" style="font-size:14px" x-text="expanded === q.id ? '&#9650;' : '&#9661;'"></button>
+                            <button type="button" class="qb-icon-btn qb-open-note" :aria-expanded="expanded === q.id" :aria-controls="'qb-tip-' + q.id" @click="toggleExpanded(q.id)" x-text="expanded === q.id ? 'Close note ↑' : 'Coach’s note ↓'"></button>
                           </div>
                         </div>
-                        <div class="qb-tip">
+                        <div class="qb-tip" :id="'qb-tip-' + q.id">
                           <div class="qb-tip-inner">
-                            <span class="qb-tip-ico">&#128161;</span>
-                            <div class="qb-tip-text" x-text="q.answer || 'Focus on structuring your thoughts clearly using the STAR method.'"></div>
+                            <span class="qb-tip-ico">Coach's margin note</span>
+                            <div class="qb-tip-text" x-text="q.answer || 'Give the answer a beginning, a decision, and a measurable result. Keep the useful detail; cut the preamble.'"></div>
                           </div>
                         </div>
-                      </div>
+                      </article>
                     </template>
                     <template x-if="!loading && filteredQuestions.length === 0">
-                      <div class="qb-empty"><div class="qb-empty-ico">&#128269;</div><p>No questions match your filters.</p></div>
+                      <div class="qb-empty"><div class="qb-empty-ico">No card found</div><p>Try another drawer, pressure level, or search phrase.</p></div>
                     </template>
                   </div>
+                  <div class="qb-show-more-wrap" x-show="!loading && visibleQuestions.length < filteredQuestions.length">
+                    <span class="qb-show-more-count" x-text="(filteredQuestions.length - visibleQuestions.length) + ' more cards in this drawer'"></span>
+                    <button type="button" class="qb-show-more" @click="showMore()">Show 12 more</button>
+                  </div>
                 </div>
+
+                <aside class="qb-desk">
+                  <div class="qb-desk-sheet">
+                    <span class="qb-desk-kicker">Coach's pull list</span>
+                    <h3>What to rehearse next</h3>
+                    <p x-show="activeModule === 'All Modules'">Start with one story question and one pressure question. Say both answers aloud before keeping another card.</p>
+                    <p x-show="activeModule !== 'All Modules'"><strong x-text="activeModule"></strong> is open. Choose one card you can answer now and one that exposes a gap.</p>
+                    <ol>
+                      <li>Read the prompt once.</li>
+                      <li>Answer without a script.</li>
+                      <li>Open the coach's note.</li>
+                    </ol>
+                    <div class="qb-desk-rule"></div>
+                    <div class="qb-desk-stat"><span>Kept</span><b x-text="favorites.length"></b></div>
+                    <div class="qb-desk-stat"><span>Written by you</span><b x-text="customQuestionCount"></b></div>
+                  </div>
+                  <div class="qb-local-mark"><span>Private</span><b>Filed on this machine</b></div>
+                </aside>
               </div>
             </div>
             </div>
         `;
+
+        requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }));
 
         // Expose color maps for Alpine templates
         window._qbModColor = MOD_COLOR;
@@ -5411,13 +7619,14 @@ document.addEventListener('DOMContentLoaded', () => {
             questions: [],
             loading: true,
             expanded: null,
+            visibleCount: 12,
             searchTerm: '',
             activeModule: 'All Modules',
             activeLevel: 'All Levels',
             activeCategory: 'All Categories',
             showFavorites: false,
             showCustomOnly: false,
-            favorites: JSON.parse(localStorage.getItem('qb_favorites') || '[]'),
+            favorites: readStoredJSON('qb_favorites', []),
             showAddForm: false,
             editingId: null,
             newQText: '', newQModule: 'Roleplay', newQLevel: 'Medium', newQCategory: '', newQTip: '',
@@ -5458,12 +7667,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 return result;
             },
 
+            get visibleQuestions() {
+                return this.filteredQuestions.slice(0, this.visibleCount);
+            },
+
+            get customQuestionCount() {
+                return this.questions.filter(question => !question.is_seed).length;
+            },
+
+            formatIndex(index) {
+                return String(Number(index) + 1).padStart(2, '0');
+            },
+
+            moduleQuestionCount(moduleName) {
+                return this.questions.filter(question => question.category === moduleName).length;
+            },
+
+            initialize() {
+                const reset = () => this.resetVisibleQuestions();
+                ['searchTerm', 'activeModule', 'activeLevel', 'activeCategory', 'showFavorites', 'showCustomOnly', 'sortCustomFirst']
+                    .forEach(property => this.$watch(property, reset));
+                this.loadQuestions();
+            },
+
+            resetVisibleQuestions() {
+                this.visibleCount = 12;
+                this.expanded = null;
+            },
+
+            toggleExpanded(id) {
+                this.expanded = this.expanded === id ? null : id;
+            },
+
+            async showMore() {
+                const firstNewIndex = this.visibleQuestions.length;
+                this.visibleCount = Math.min(this.visibleCount + 12, this.filteredQuestions.length);
+                await this.$nextTick();
+                document.querySelector(`[data-qb-visible-index="${firstNewIndex}"] .qb-open-note`)?.focus();
+            },
+
             async loadQuestions() {
                 this.loading = true;
+                await durableStorage.ready;
+                this.favorites = readStoredJSON('qb_favorites', []);
                 try {
                     const res = await fetch('/api/questions');
                     const data = await res.json();
                     this.questions = data.questions || [];
+                    this.visibleCount = 12;
                 } catch (e) {
                     console.error('Failed to load questions:', e);
                     this.questions = [];
@@ -5521,6 +7772,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (this.activeCategory !== 'All Categories' && !this.allCategories.includes(this.activeCategory)) {
                     this.activeCategory = 'All Categories';
                 }
+                this.visibleCount = Math.max(12, Math.min(this.visibleCount, this.filteredQuestions.length));
                 try { await fetch('/api/questions/' + id, { method: 'DELETE' }); }
                 catch (e) { console.error('Failed to delete question:', e); }
             },
@@ -5531,7 +7783,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     this.favorites.push(id);
                 }
-                localStorage.setItem('qb_favorites', JSON.stringify(this.favorites));
+                persistLocalValue('qb_favorites', JSON.stringify(this.favorites));
             },
 
             toggleSort() {
@@ -5563,7 +7815,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.showGenForm = false;
                 } catch (e) {
                     console.error('Failed to generate question:', e);
-                    alert('Failed to generate question. Make sure Ollama is running with the qwen2.5:7b model.');
+                    alert(`Failed to generate a question. Make sure Ollama is running with ${selectedModelName()}.`);
                     if (!wasPreviewOpen) this.showGenForm = true;
                 }
                 this.generating = false;
@@ -5657,17 +7909,20 @@ document.addEventListener('DOMContentLoaded', () => {
         .mg-run-game{font-size:12px;font-weight:800;color:var(--t-heading);display:flex;align-items:center;gap:6px}
         .mg-run-score{font-size:16px;font-weight:900}
         .mg-run-summary{font-size:11px;color:var(--t-muted);line-height:1.5;min-height:34px}
-        .mg-empty{font-size:12px;color:var(--t-muted);line-height:1.6}
+        .mg-empty{font-size:12px;color:#524b47;line-height:1.6}
         @media(max-width:720px){.mg-run-list{grid-template-columns:1fr}.mg-rec-top{align-items:flex-start}.mg-rec-btn{margin-left:0}.mg-rec-top{flex-wrap:wrap}}
         </style>
         <div class="mg-wrap">
             <div class="mg-orbs"><div class="mg-orb mg-orb1"></div><div class="mg-orb mg-orb2"></div></div>
             ${starsHTML('mg-stars')}
             <div class="mg-page">
-                <button class="mg-back" onclick="window.nav('hero')">${ti('arrow-left')} Home</button>
+                <div class="mg-topbar">
+                    <span class="mg-brand">THE TRAINING FLOOR <small>Practice Games Hub</small></span>
+                    <button class="mg-back" onclick="window.nav('hero')">${ti('arrow-left')} Home</button>
+                </div>
                 <div class="mg-hero">
-                    <h1>${ti('device-gamepad-2')} Mini-Games</h1>
-                    <p>Sharpen your interview skills with quick, focused training games. Each game targets a different skill - speed, structure, and negotiation.</p>
+                    <h1>Train the skill, not the script.</h1>
+                    <p>Three rehearsal stations. Real reps. Measurable growth.</p>
                 </div>
                 <div class="mg-rec" id="mg-recommendation-card">
                     <div class="mg-rec-top">
@@ -5959,46 +8214,70 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="bz-orbs"><div class="bz-orb bz-orb1"></div><div class="bz-orb bz-orb2"></div></div>
             <div class="bz-page">
                 <div class="bz-top">
+                    <div class="bz-station-brand"><span>THE TRAINING FLOOR</span><i></i><b>Station 01</b></div>
                     <button class="bz-back" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button>
-                    <div class="bz-badge">${ti('bolt')} 60-Second Blitz</div>
+                    <div class="bz-badge"><span class="bz-live-dot"></span> Speed rehearsal</div>
                 </div>
                 <div id="bz-intro" class="bz-screen">
-                    <div class="bz-hero-h">Think fast. Answer faster.</div>
-                    <div class="bz-hero-sub">10 real interview questions. 60 seconds each. No second-guessing. Train your brain to produce clear, concise answers under pressure.</div>
-                    <div class="bz-rules">
-                        <div class="bz-rule"><div class="bz-rule-ico">${ti('help-circle')}</div><div class="bz-rule-val" id="bz-q-count">10</div><div class="bz-rule-lbl">Questions</div></div>
-                        <div class="bz-rule"><div class="bz-rule-ico">${ti('clock')}</div><div class="bz-rule-val" id="bz-t-count">60s</div><div class="bz-rule-lbl">Per question</div></div>
-                        <div class="bz-rule"><div class="bz-rule-ico">${ti('chart-bar')}</div><div class="bz-rule-val">Live</div><div class="bz-rule-lbl">Word count</div></div>
+                    <div class="bz-intro-grid">
+                        <section class="bz-intro-copy">
+                            <div class="bz-eyebrow">60-SECOND BLITZ</div>
+                            <div class="bz-hero-h">Think fast.<br><span>Speak clearly.</span></div>
+                            <div class="bz-ink-rule" aria-hidden="true"></div>
+                            <div class="bz-hero-sub">Real interview prompts. One running clock. Build the habit of finding a clear answer before doubt gets in the way.</div>
+                            <div class="bz-rules">
+                                <div class="bz-rule"><div class="bz-rule-ico">${ti('help-circle')}</div><div><div class="bz-rule-val" id="bz-q-count">10</div><div class="bz-rule-lbl">prompts</div></div></div>
+                                <div class="bz-rule"><div class="bz-rule-ico">${ti('clock')}</div><div><div class="bz-rule-val" id="bz-t-count">60s</div><div class="bz-rule-lbl">each</div></div></div>
+                                <div class="bz-rule"><div class="bz-rule-ico">${ti('chart-bar')}</div><div><div class="bz-rule-val">Live</div><div class="bz-rule-lbl">pace</div></div></div>
+                            </div>
+                        </section>
+                        <div class="bz-stopwatch-poster" aria-hidden="true">
+                            <div class="bz-stopwatch-shadow"></div>
+                            <div class="bz-stopwatch-crown"></div>
+                            <div class="bz-stopwatch-case">
+                                <div class="bz-stopwatch-dial"><span>60</span><i></i><b>20</b><em>40</em><strong>SECONDS</strong></div>
+                            </div>
+                            <div class="bz-poster-note">No retakes.<br>Keep the thought moving.</div>
+                        </div>
+                        <section class="bz-control-sheet">
+                            <div class="bz-sheet-clip" aria-hidden="true"></div>
+                            <div class="bz-sheet-kicker">SET THE DRILL</div>
+                            <div class="bz-field-label">Prompt deck</div>
+                            <div class="bz-deck-row">
+                                <button class="bz-deck active" id="bz-deck-general" onclick="bzSetDeck('general')">${ti('messages')} General</button>
+                                <button class="bz-deck" id="bz-deck-behavioral" onclick="bzSetDeck('behavioral')">${ti('users')} Behavioral</button>
+                                <button class="bz-deck" id="bz-deck-rolefit" onclick="bzSetDeck('rolefit')">${ti('briefcase')} Role-fit</button>
+                                <button class="bz-deck" id="bz-deck-weak" onclick="bzSetDeck('weak')">${ti('target-arrow')} Weak area</button>
+                            </div>
+                            <div class="bz-field-label">Pressure</div>
+                            <div class="bz-diff-row">
+                                <button class="bz-diff" id="bz-d-easy" onclick="bzSetDiff('easy',5,90)"><b>Easy</b><span>5 prompts / 90 sec</span></button>
+                                <button class="bz-diff active" id="bz-d-medium" onclick="bzSetDiff('medium',10,60)"><b>Medium</b><span>10 prompts / 60 sec</span></button>
+                                <button class="bz-diff" id="bz-d-hard" onclick="bzSetDiff('hard',10,30)"><b>Hard</b><span>10 prompts / 30 sec</span></button>
+                            </div>
+                            <button class="bz-start" onclick="bzStart()"><span class="bz-start-icon">${ti('arrow-right')}</span><span>START THE CLOCK</span></button>
+                            <div class="bz-coach-script">“Answer the question in front of you. Proof beats polish.”</div>
+                        </section>
                     </div>
-                    <div style="font-size:12px;font-weight:700;color:var(--t-muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Prompt Deck</div>
-                    <div class="bz-deck-row">
-                        <button class="bz-deck active" id="bz-deck-general" onclick="bzSetDeck('general')">${ti('messages')} General</button>
-                        <button class="bz-deck" id="bz-deck-behavioral" onclick="bzSetDeck('behavioral')">${ti('users')} Behavioral</button>
-                        <button class="bz-deck" id="bz-deck-rolefit" onclick="bzSetDeck('rolefit')">${ti('briefcase')} Role-fit</button>
-                        <button class="bz-deck" id="bz-deck-weak" onclick="bzSetDeck('weak')">${ti('target-arrow')} Weak area</button>
-                    </div>
-                    <div style="font-size:12px;font-weight:700;color:var(--t-muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Difficulty</div>
-                    <div class="bz-diff-row">
-                        <button class="bz-diff" id="bz-d-easy" onclick="bzSetDiff('easy',5,90)">${ti('circle')} Easy (5Q - 90s)</button>
-                        <button class="bz-diff active" id="bz-d-medium" onclick="bzSetDiff('medium',10,60)">${ti('circle-dot')} Medium (10Q - 60s)</button>
-                        <button class="bz-diff" id="bz-d-hard" onclick="bzSetDiff('hard',10,30)">${ti('circle-filled')} Hard (10Q - 30s)</button>
-                    </div>
-                    <button class="bz-start" onclick="bzStart()">${ti('bolt')} Start Blitz</button>
                 </div>
                 <div id="bz-game" style="display:none" class="bz-screen">
                     <div class="bz-game-hdr">
-                        <div class="bz-prog-txt">Question <span id="bz-q-num">1</span> of <span id="bz-q-total">10</span></div>
+                        <div class="bz-timer-label">THE CLOCK IS RUNNING</div>
                         <div class="bz-timer-wrap" id="bz-timer-wrap">
+                            <div class="bz-timer-crown"></div>
                             <svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="38" fill="none" stroke="var(--t-border)" stroke-width="7"/><circle cx="45" cy="45" r="38" fill="none" id="bz-timer-arc" stroke-width="7" stroke-linecap="round" stroke-dasharray="238.8" stroke-dashoffset="0" style="stroke:#f59e0b;transition:stroke-dashoffset .1s linear"/></svg>
                             <div class="bz-timer-center" id="bz-timer-display">60</div>
                         </div>
+                        <div class="bz-prog-txt">Prompt <span id="bz-q-num">1</span> <i>/</i> <span id="bz-q-total">10</span></div>
                     </div>
                     <div class="bz-q-bar"><div class="bz-q-fill" id="bz-q-fill" style="width:10%"></div></div>
-                    <div class="bz-q-card"><div class="bz-q-text" id="bz-question">Loading...</div></div>
-                    <textarea class="bz-answer" id="bz-answer" placeholder="Type your answer here..."></textarea>
+                    <div class="bz-q-card"><div class="bz-card-clip" aria-hidden="true"></div><div><div class="bz-card-kicker">YOUR PROMPT</div><div class="bz-q-text" id="bz-question">Loading...</div></div></div>
+                    <div class="bz-answer-desk"><label for="bz-answer">YOUR RESPONSE</label><textarea class="bz-answer" id="bz-answer" placeholder="Answer naturally. Keep moving until the bell."></textarea><div class="bz-answer-hint">The timer advances automatically when it reaches zero.</div></div>
                     <div class="bz-game-foot">
-                        <div class="bz-live"><div>Words: <span id="bz-wc">0</span></div><div>Pace: <span id="bz-pace">-</span></div></div>
-                        <div class="bz-action-row"><button class="bz-skip" onclick="bzSkip()">Skip</button><button class="bz-next" onclick="bzNext()">Next ${ti('arrow-right')}</button></div>
+                        <div class="bz-foot-kicker">LIVE READ</div>
+                        <div class="bz-live"><div><small>WORDS CAPTURED</small><span id="bz-wc">0</span></div><div><small>SPEAKING PACE</small><span id="bz-pace">-</span></div></div>
+                        <div class="bz-pressure-note">Short is fine. Vague is not.<br><em>Give one action and one result.</em></div>
+                        <div class="bz-action-row"><button class="bz-skip" onclick="bzSkip()">PASS</button><button class="bz-next" onclick="bzNext()"><span>NEXT PROMPT</span>${ti('arrow-right')}</button></div>
                     </div>
                 </div>
                 <div id="bz-results" style="display:none" class="bz-screen"></div>
@@ -6126,38 +8405,51 @@ document.addEventListener('DOMContentLoaded', () => {
             if (score >= 85) badges.push({ c: '#fbbf24', t: `${ti('trophy')} Top Performer` });
 
             document.getElementById('bz-results').innerHTML = `
-                <div class="bz-results-hero">
-                    <div class="bz-big-score">${score}</div>
-                    <div class="bz-results-title">${grade}</div>
-                    <div class="bz-results-sub">${gradeDesc}</div>
-                </div>
-                <div class="bz-stats">
-                    <div class="bz-stat"><div class="bz-stat-big">${avgWC}</div><div class="bz-stat-lbl">Avg words</div></div>
-                    <div class="bz-stat"><div class="bz-stat-big">${answered.length}/${config.total}</div><div class="bz-stat-lbl">Answered</div></div>
-                    <div class="bz-stat"><div class="bz-stat-big">${avgWPM} wpm</div><div class="bz-stat-lbl">Avg pace</div></div>
-                </div>
-                <div class="bz-badge-row">${badges.map(b => `<span class="bz-badge-item" style="color:${b.c};border-color:${b.c}30;background:${b.c}12">${b.t}</span>`).join('')}</div>
-                <div class="bz-qa-list">${gs.questions.map((q, i) => {
+                <div class="bz-results-layout">
+                    <aside class="bz-score-slip">
+                        <div class="bz-slip-label">60-SECOND BLITZ</div>
+                        <div class="bz-big-score">${score}<small>/ 100</small></div>
+                        <div class="bz-results-title">${grade}</div>
+                        <div class="bz-results-sub">${gradeDesc}</div>
+                        <div class="bz-score-stamp">PRESSURE<br>TESTED</div>
+                    </aside>
+                    <section class="bz-results-record">
+                        <div class="bz-record-kicker">THE REHEARSAL SLIP</div>
+                        <div class="bz-stats">
+                            <div class="bz-stat"><div class="bz-stat-big">${avgWC}</div><div class="bz-stat-lbl">Average words</div></div>
+                            <div class="bz-stat"><div class="bz-stat-big">${answered.length}/${config.total}</div><div class="bz-stat-lbl">Prompts answered</div></div>
+                            <div class="bz-stat"><div class="bz-stat-big">${avgWPM}</div><div class="bz-stat-lbl">Words per minute</div></div>
+                        </div>
+                        ${badges.length ? `<div class="bz-badge-row">${badges.map(b => `<span class="bz-badge-item">${b.t}</span>`).join('')}</div>` : ''}
+                        <div class="bz-qa-list">${gs.questions.map((q, i) => {
                 const a = gs.answers[i];
                 const r = reviews[i];
                 const preview = a.text ? escapeHTML(a.text.length > 240 ? a.text.slice(0, 240) + '...' : a.text) : '<span style="color:var(--t-muted)">No answer captured.</span>';
                 return `<div class="bz-qa-item">
-                    <div class="bz-qa-q">${i + 1}. ${escapeHTML(q.length > 74 ? q.slice(0, 74) + '...' : q)}</div>
+                    <div class="bz-qa-index">${String(i + 1).padStart(2, '0')}</div>
+                    <div class="bz-qa-copy"><div class="bz-qa-q">${escapeHTML(q.length > 92 ? q.slice(0, 92) + '...' : q)}</div>
                     <div class="bz-qa-a">${preview}</div>
-                    <div class="bz-qa-meta">Score: ${r.score}/100 - ${escapeHTML(r.summary)}</div>
+                    <div class="bz-qa-meta"><b>${r.score}/100</b> ${escapeHTML(r.summary)}</div>
                     ${r.flags.length ? `<div class="bz-qa-flags">${r.flags.map(f => `<span class="bz-qa-flag">${escapeHTML(f)}</span>`).join('')}</div>` : ''}
-                </div>`;
+                    </div></div>`;
             }).join('')}</div>
-                <div class="bz-cta-row">
-                    <button class="bz-btn-primary" onclick="bzStart()">Play again</button>
-                    <button class="bz-btn-secondary" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button>
+                        <div class="bz-cta-row">
+                            <button class="bz-btn-secondary" onclick="window.nav('games')">${ti('arrow-left')} Training Floor</button>
+                            <button class="bz-btn-primary" onclick="bzStart()">RUN IT AGAIN ${ti('arrow-right')}</button>
+                        </div>
+                    </section>
                 </div>`;
             bzShow('bz-results');
         }
 
         function bzShow(id) {
-            ['bz-intro', 'bz-game', 'bz-results'].forEach(s => { document.getElementById(s).style.display = s === id ? 'block' : 'none'; });
+            ['bz-intro', 'bz-game', 'bz-results'].forEach(s => {
+                const screen = document.getElementById(s);
+                screen.classList.toggle('is-active', s === id);
+                screen.style.setProperty('display', s === id ? (s === 'bz-game' ? 'grid' : 'block') : 'none', 'important');
+            });
         }
+        bzShow('bz-intro');
     }
 
     // --- STAR BUILDER ---------------------------------------
@@ -6173,10 +8465,10 @@ document.addEventListener('DOMContentLoaded', () => {
             { icon: 'message', name: 'Feedback', desc: 'Giving or receiving difficult feedback', q: 'Describe a situation where you had to give difficult feedback to someone. How did you approach it?' },
         ];
         const BUCKETS = [
-            { id: 's', letter: 'S', name: 'Situation', col: '#7c3aed', hint: 'Set the scene in 2-3 sentences. Context, people, stakes. Aim for 20-50 words.', ideal: [20, 50] },
-            { id: 't', letter: 'T', name: 'Task', col: '#2563eb', hint: 'What was YOUR specific responsibility? Use "I" not "we". 15-40 words.', ideal: [15, 40] },
-            { id: 'a', letter: 'A', name: 'Action', col: '#059669', hint: 'Walk through what YOU did, step by step. Strong verbs. 50-100 words.', ideal: [50, 100] },
-            { id: 'r', letter: 'R', name: 'Result', col: '#d97706', hint: 'What changed? Include a number or concrete outcome. 20-50 words.', ideal: [20, 50] },
+            { id: 's', letter: 'S', name: 'Situation', col: '#174e3e', hint: 'Set the scene in 2-3 sentences. Context, people, stakes. Aim for 20-50 words.', ideal: [20, 50] },
+            { id: 't', letter: 'T', name: 'Task', col: '#1c5947', hint: 'What was YOUR specific responsibility? Use "I" not "we". 15-40 words.', ideal: [15, 40] },
+            { id: 'a', letter: 'A', name: 'Action', col: '#245f4d', hint: 'Walk through what YOU did, step by step. Strong verbs. 50-100 words.', ideal: [50, 100] },
+            { id: 'r', letter: 'R', name: 'Result', col: '#174e3e', hint: 'What changed? Include a number or concrete outcome. 20-50 words.', ideal: [20, 50] },
         ];
 
         function scoreSTARSection(bucket, text) {
@@ -6267,7 +8559,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const coaching = data.coaching;
                 box.innerHTML = `
-                    <div class="st-ai-title">${ti('brain')} qwen2.5:7b Coaching</div>
+                    <div class="st-ai-title">${ti('brain')} ${escapeHTML(selectedModelName())} Coaching</div>
                     ${coaching.summary ? `<div class="st-ai-copy">${escapeHTML(coaching.summary)}</div>` : ''}
                     ${Array.isArray(coaching.improvements) && coaching.improvements.length ? `<div class="st-ai-copy"><strong>Focus:</strong> ${coaching.improvements.map(escapeHTML).join('; ')}</div>` : ''}
                     ${coaching.rewritten_answer ? `<div class="st-rewrite">${escapeHTML(coaching.rewritten_answer)}</div>` : ''}
@@ -6360,38 +8652,63 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="st-orbs"><div class="st-orb st-orb1"></div><div class="st-orb st-orb2"></div></div>
             <div class="st-page">
                 <div class="st-top">
+                    <div class="st-station-brand"><span>THE TRAINING FLOOR</span><i></i><b>Station 02</b></div>
                     <button class="st-back" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button>
-                    <div class="st-badge">${ti('stars')} STAR Builder</div>
+                    <div class="st-badge"><span class="st-live-dot"></span> Story workshop</div>
                 </div>
                 <div id="st-select" class="st-screen">
-                    <div class="st-hero-h">Pick your scenario</div>
-                    <div class="st-hero-sub">Choose the type of behavioral question you want to practice answering.</div>
-                    <div class="st-sc-grid">${SCENARIOS.map((s, i) => `<div class="st-sc" onclick="stSelect(${i})"><div class="st-sc-ico">${ti(s.icon)}</div><div class="st-sc-name">${s.name}</div><div class="st-sc-desc">${s.desc}</div></div>`).join('')}</div>
+                    <div class="st-select-head">
+                        <div><div class="st-eyebrow">STAR BUILDER</div><div class="st-hero-h">Choose a story<br><span>worth shaping.</span></div></div>
+                        <div class="st-hero-sub">Select a rehearsal prompt, then build the answer from four pieces. The workshop will keep the story balanced and evidence-led.</div>
+                    </div>
+                    <div class="st-method-strip">
+                        <span><b>S</b> Situation</span><i></i><span><b>T</b> Task</span><i></i><span><b>A</b> Action</span><i></i><span><b>R</b> Result</span>
+                    </div>
+                    <div class="st-sc-grid">${SCENARIOS.map((s, i) => `<button class="st-sc" onclick="stSelect(${i})"><div class="st-sc-index">${String(i + 1).padStart(2, '0')}</div><div class="st-sc-ico">${ti(s.icon)}</div><div class="st-sc-name">${s.name}</div><div class="st-sc-desc">${s.desc}</div><div class="st-sc-action">BUILD THIS STORY ${ti('arrow-right')}</div></button>`).join('')}</div>
                 </div>
                 <div id="st-build" style="display:none" class="st-screen">
-                    <div class="st-step-bar"><div class="st-step-pill" id="st-sp0"></div><div class="st-step-pill" id="st-sp1"></div><div class="st-step-pill" id="st-sp2"></div><div class="st-step-pill" id="st-sp3"></div></div>
-                    <div class="st-q-box"><div class="st-q-label">Your question</div><div class="st-q-text" id="st-q-text"></div></div>
-                    <div id="st-bucket-area"></div>
-                    <div class="st-nav-row"><button class="st-btn-ghost" onclick="stBack()">${ti('arrow-left')} Back</button><button class="st-btn-primary" id="st-next-btn" onclick="stNext()">Next ${ti('arrow-right')}</button></div>
+                    <div class="st-build-grid">
+                        <aside class="st-question-board">
+                            <div class="st-q-box"><div class="st-q-clip" aria-hidden="true"></div><div class="st-q-label">THE INTERVIEW PROMPT</div><div class="st-q-text" id="st-q-text"></div><div class="st-q-note">Keep every piece tied to this question.</div></div>
+                            <div class="st-coach-note">“Spend most of the story on what <u>you</u> did.”</div>
+                        </aside>
+                        <section class="st-workbench">
+                            <div class="st-workbench-head"><div><div class="st-eyebrow">THE STORY WORKBENCH</div><h2>Build it in four parts.</h2></div><div class="st-progress-copy">ONE CARD AT A TIME</div></div>
+                            <div class="st-step-bar">${BUCKETS.map((b, i) => `<div class="st-step-pill" id="st-sp${i}"><b>${b.letter}</b><span>${b.name}</span><small id="st-step-state-${i}">WAITING</small></div>`).join('')}</div>
+                            <div id="st-bucket-area"></div>
+                            <div class="st-nav-row"><button class="st-btn-ghost" onclick="stBack()">${ti('arrow-left')} BACK</button><button class="st-btn-primary" id="st-next-btn" onclick="stNext()">NEXT CARD ${ti('arrow-right')}</button></div>
+                        </section>
+                    </div>
                 </div>
                 <div id="st-assembly" style="display:none" class="st-screen">
-                    <div class="st-hero-h" style="margin-bottom:6px">Your answer, assembled</div>
-                    <div class="st-hero-sub">Each colour shows a different STAR component.</div>
-                    <div class="st-legend"><span class="st-legend-item"><span class="st-legend-dot" style="background:#c4b5fd"></span>Situation</span><span class="st-legend-item"><span class="st-legend-dot" style="background:#93c5fd"></span>Task</span><span class="st-legend-item"><span class="st-legend-dot" style="background:#6ee7b7"></span>Action</span><span class="st-legend-item"><span class="st-legend-dot" style="background:#fcd34d"></span>Result</span></div>
-                    <div class="st-asm-box"><div class="st-asm-text" id="st-asm-text"></div></div>
-                    <div class="st-nav-row"><button class="st-btn-ghost" onclick="stBackToBuild()">${ti('arrow-left')} Edit</button><button class="st-btn-primary" onclick="stShowScore()">View Score ${ti('arrow-right')}</button></div>
+                    <div class="st-assembly-layout">
+                        <aside class="st-assembly-title"><div class="st-eyebrow">THE FINISHED DRAFT</div><div class="st-hero-h">Your story,<br><span>assembled.</span></div><div class="st-hero-sub">Read it once as a complete answer. The coloured margin marks show where each part begins.</div></aside>
+                        <section class="st-assembly-sheet">
+                            <div class="st-assembly-clip" aria-hidden="true"></div>
+                            <div class="st-legend">${BUCKETS.map(b => `<span class="st-legend-item"><b>${b.letter}</b>${b.name}</span>`).join('')}</div>
+                            <div class="st-asm-box"><div class="st-asm-text" id="st-asm-text"></div></div>
+                            <div class="st-nav-row"><button class="st-btn-ghost" onclick="stBackToBuild()">${ti('arrow-left')} EDIT THE CARDS</button><button class="st-btn-primary" onclick="stShowScore()">FILE THE STORY ${ti('arrow-right')}</button></div>
+                        </section>
+                    </div>
                 </div>
                 <div id="st-score" style="display:none" class="st-screen">
-                    <div class="st-score-hero">
-                        <div class="st-score-ring"><svg viewBox="0 0 130 130"><circle cx="65" cy="65" r="55" fill="none" stroke="var(--t-border)" stroke-width="10"/><circle cx="65" cy="65" r="55" fill="none" id="st-score-arc" stroke-width="10" stroke-linecap="round" stroke-dasharray="345.6" stroke-dashoffset="345.6" style="transition:stroke-dashoffset 1.3s cubic-bezier(.4,0,.2,1)"/></svg>
-                        <div class="st-score-center"><div class="st-score-num" id="st-score-num">0</div><div class="st-score-label">/ 100</div></div></div>
-                        <div class="st-score-title" id="st-score-grade">Great Answer</div>
-                        <div class="st-score-sub" id="st-score-sub">Your answer was well-structured and specific.</div>
+                    <div class="st-score-layout">
+                        <aside class="st-score-hero">
+                            <div class="st-score-kicker">STORY FILED</div>
+                            <div class="st-score-ring"><svg viewBox="0 0 130 130"><circle cx="65" cy="65" r="55" fill="none" stroke="var(--t-border)" stroke-width="10"/><circle cx="65" cy="65" r="55" fill="none" id="st-score-arc" stroke-width="10" stroke-linecap="round" stroke-dasharray="345.6" stroke-dashoffset="345.6" style="transition:stroke-dashoffset 1.3s cubic-bezier(.4,0,.2,1)"/></svg>
+                            <div class="st-score-center"><div class="st-score-num" id="st-score-num">0</div><div class="st-score-label">/ 100</div></div></div>
+                            <div class="st-score-title" id="st-score-grade">Great Answer</div>
+                            <div class="st-score-sub" id="st-score-sub">Your answer was well-structured and specific.</div>
+                            <div class="st-score-stamp">STORY<br>READY</div>
+                        </aside>
+                        <section class="st-score-record">
+                            <div class="st-score-record-head"><div class="st-eyebrow">COACH'S MARKS</div><h2>How the story holds together.</h2></div>
+                            <div class="st-d-grid" id="st-d-grid"></div>
+                            <div id="st-review-area"></div>
+                            <div class="st-ai-note" id="st-ai-note">${ti('loader-2')} Checking local qwen coaching...</div>
+                            <div class="st-cta-row"><button class="st-btn-ghost" onclick="window.nav('games')">${ti('arrow-left')} TRAINING FLOOR</button><button class="st-btn-primary" onclick="stRestart()">BUILD ANOTHER STORY ${ti('arrow-right')}</button></div>
+                        </section>
                     </div>
-                    <div class="st-d-grid" id="st-d-grid"></div>
-                    <div id="st-review-area"></div>
-                    <div class="st-ai-note" id="st-ai-note">${ti('loader-2')} Checking local qwen coaching...</div>
-                    <div class="st-cta-row"><button class="st-btn-primary" onclick="stRestart()">Try another scenario</button><button class="st-btn-ghost" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button></div>
                 </div>
             </div>
         </div>`;
@@ -6405,22 +8722,37 @@ document.addEventListener('DOMContentLoaded', () => {
             const b = BUCKETS[currentStep];
             answers[b.id] = document.getElementById('st-ta-' + b.id)?.value || '';
             if (currentStep < 3) { currentStep++; stUpdateProgress(); stRenderBucket(currentStep); }
-            else { document.getElementById('st-asm-text').innerHTML = `<span class="s-c">${escapeHTML(answers.s)}</span> <span class="t-c">${escapeHTML(answers.t)}</span> <span class="a-c">${escapeHTML(answers.a)}</span> <span class="r-c">${escapeHTML(answers.r)}</span>`; stShow('st-assembly'); }
-            document.getElementById('st-next-btn').innerHTML = currentStep === 3 ? `Build my answer ${ti('arrow-right')}` : `Next ${ti('arrow-right')}`;
+            else {
+                document.getElementById('st-asm-text').innerHTML = BUCKETS.map(bucket => `
+                    <div class="st-asm-part ${bucket.id}-c"><b>${bucket.letter}</b><div><small>${bucket.name}</small><p>${escapeHTML(answers[bucket.id])}</p></div></div>
+                `).join('');
+                stShow('st-assembly');
+            }
+            document.getElementById('st-next-btn').innerHTML = currentStep === 3 ? `ASSEMBLE THE STORY ${ti('arrow-right')}` : `NEXT CARD ${ti('arrow-right')}`;
         };
 
-        function stUpdateProgress() { BUCKETS.forEach((_, i) => { const el = document.getElementById('st-sp' + i); el.className = 'st-step-pill' + (i < currentStep ? ' done' : i === currentStep ? ' active' : ''); }); }
+        function stUpdateProgress() {
+            BUCKETS.forEach((_, i) => {
+                const el = document.getElementById('st-sp' + i);
+                el.className = 'st-step-pill' + (i < currentStep ? ' done' : i === currentStep ? ' active' : '');
+                const state = document.getElementById('st-step-state-' + i);
+                if (state) state.textContent = i < currentStep ? 'FILED' : i === currentStep ? 'WRITING' : 'WAITING';
+            });
+        }
 
         function stRenderBucket(idx) {
             const b = BUCKETS[idx];
             document.getElementById('st-bucket-area').innerHTML = `
-            <div class="st-bucket active">
-                <div class="st-bkt-hdr"><div class="st-bkt-tag"><div class="st-bkt-letter" style="background:${b.col}">${b.letter}</div><span style="color:${b.col}">${b.name}</span></div><div class="st-alerts" id="st-alerts-${b.id}"></div></div>
-                <div class="st-bkt-hint">${b.hint}</div>
-                <textarea class="st-bkt-ta" id="st-ta-${b.id}" rows="4" placeholder="Start writing your ${b.name.toLowerCase()}..." oninput="stOnInput('${b.id}',${idx})">${answers[b.id]}</textarea>
-                <div class="st-bkt-foot">
-                    <div class="st-wm"><div class="st-wm-bar"><div class="st-wm-fill" id="st-wf-${b.id}"></div></div><span id="st-wc-${b.id}">0 words</span></div>
-                    <span style="font-size:11px;color:var(--t-muted)">Ideal: ${b.ideal[0]}-${b.ideal[1]} words</span>
+            <div class="st-bucket active" data-star-part="${b.id}">
+                <div class="st-bkt-letter">${b.letter}</div>
+                <div class="st-bucket-copy">
+                    <div class="st-bkt-hdr"><div class="st-bkt-tag"><span>${b.name}</span><small>CARD ${String(idx + 1).padStart(2, '0')} / 04</small></div><div class="st-alerts" id="st-alerts-${b.id}"></div></div>
+                    <div class="st-bkt-hint">${b.hint}</div>
+                    <textarea class="st-bkt-ta" id="st-ta-${b.id}" rows="5" placeholder="Write the ${b.name.toLowerCase()} here..." oninput="stOnInput('${b.id}',${idx})">${answers[b.id]}</textarea>
+                    <div class="st-bkt-foot">
+                        <div class="st-wm"><div class="st-wm-bar"><div class="st-wm-fill" id="st-wf-${b.id}"></div></div><span id="st-wc-${b.id}">0 words</span></div>
+                        <span class="st-ideal-count">IDEAL ${b.ideal[0]}-${b.ideal[1]} WORDS</span>
+                    </div>
                 </div>
             </div>`;
             stOnInput(b.id, idx);
@@ -6476,7 +8808,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('st-score-grade').textContent = grade;
             document.getElementById('st-score-sub').textContent = sub;
             document.getElementById('st-score-num').textContent = total;
-            document.getElementById('st-d-grid').innerHTML = dims.map(d => `<div class="st-d-card"><div class="st-d-lbl">${escapeHTML(d.name)}</div><div class="st-d-bar"><div class="st-d-fill" style="width:0%;background:${d.col}" data-w="${d.score}%"></div></div><div style="display:flex;justify-content:space-between"><div style="font-size:13px;font-weight:700;color:#fff">${d.score >= 85 ? 'Excellent' : d.score >= 70 ? 'Good' : d.score >= 55 ? 'Fair' : 'Needs work'}</div><div style="font-size:12px;font-weight:600;color:var(--t-muted)">${d.score}/100</div></div></div>`).join('');
+            document.getElementById('st-d-grid').innerHTML = dims.map((d, i) => `<div class="st-d-card"><div class="st-d-num">${String(i + 1).padStart(2, '0')}</div><div class="st-d-copy"><div class="st-d-lbl">${escapeHTML(d.name)}</div><div class="st-d-bar"><div class="st-d-fill" style="width:0%" data-w="${d.score}%"></div></div><div class="st-d-meta"><span>${d.score >= 85 ? 'Excellent' : d.score >= 70 ? 'Good' : d.score >= 55 ? 'Fair' : 'Needs work'}</span><b>${d.score}/100</b></div></div></div>`).join('');
             document.getElementById('st-review-area').innerHTML = `
                 <div class="st-review">
                     <div class="st-review-title">${ti('chart-bar')} Section Scores</div>
@@ -6497,7 +8829,14 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchSTARCoach(review, answers, selectedQ);
         };
 
-        function stShow(id) { ['st-select', 'st-build', 'st-assembly', 'st-score'].forEach(s => { document.getElementById(s).style.display = s === id ? 'block' : 'none'; }); }
+        function stShow(id) {
+            ['st-select', 'st-build', 'st-assembly', 'st-score'].forEach(s => {
+                const screen = document.getElementById(s);
+                screen.classList.toggle('is-active', s === id);
+                screen.style.setProperty('display', s === id ? 'block' : 'none', 'important');
+            });
+        }
+        stShow('st-select');
     }
 
     // --- SALARY DARE ----------------------------------------
@@ -6608,38 +8947,75 @@ document.addEventListener('DOMContentLoaded', () => {
 
         mainContent.innerHTML = CSS + `
         <div class="sd-wrap">
-            <div class="sd-orbs"><div class="sd-orb sd-orb1"></div><div class="sd-orb sd-orb2"></div></div>
+            <header class="sd-masthead">
+                <div class="sd-station-brand"><strong>THE TRAINING FLOOR</strong><span>Station 03</span></div>
+                <button class="sd-back" onclick="window.nav('games')">${ti('arrow-left')} Back to games</button>
+                <div class="sd-badge"><span class="sd-live-dot"></span> Offer on table</div>
+            </header>
             <div class="sd-page">
-                <div class="sd-top"><button class="sd-back" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button><div class="sd-badge">${ti('cash-banknote')} Salary Dare</div></div>
                 <div id="sd-intro" class="st-screen">
-                    <div class="sd-hero-h">Know your worth. <span style="color:#4ade80">Prove it.</span></div>
-                    <div class="sd-hero-sub">The offer is on the table. You have 5 rounds to negotiate the best deal you can.</div>
-                    <div style="font-size:12px;font-weight:700;color:var(--t-muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px">Pick your scenario</div>
-                    <div class="sd-sc-grid">${SCENARIOS.map((s, i) => `<div class="sd-sc" id="sd-sc-${i}" onclick="sdSelectSc(${i})"><div class="sd-sc-hdr">${ti(s.icon)}<span class="sd-sc-name">${s.name}</span></div><div class="sd-sc-detail">Role: <strong style="color:var(--t-fg)">${s.role}</strong></div><div class="sd-sc-offer">Initial: $${s.initial.toLocaleString()}</div></div>`).join('')}</div>
-                    <button class="sd-start" onclick="sdStart()">${ti('player-play')} Accept the Challenge</button>
+                    <div class="sd-intro-head">
+                        <div>
+                            <div class="sd-kicker">Salary Dare · The negotiation table</div>
+                            <h1 class="sd-hero-h">Make the ask.<br><em>Hold your ground.</em></h1>
+                            <p class="sd-hero-sub">Four offer rooms. Five rounds. Build a case that moves the number without losing the room.</p>
+                        </div>
+                        <div class="sd-brief-note"><span>Today’s drill</span><strong>Anchor with evidence.</strong><small>Base is only one part of the deal.</small></div>
+                    </div>
+                    <div class="sd-scenario-label"><span>Select an offer room</span><i></i></div>
+                    <div class="sd-sc-grid">${SCENARIOS.map((s, i) => `<button class="sd-sc" id="sd-sc-${i}" onclick="sdSelectSc(${i})">
+                        <span class="sd-sc-index">0${i + 1}</span>
+                        <span class="sd-sc-ico">${ti(s.icon)}</span>
+                        <span class="sd-sc-copy"><strong class="sd-sc-name">${s.name}</strong><small class="sd-sc-detail">${s.role}</small></span>
+                        <span class="sd-sc-offer"><small>Offer</small>$${s.initial.toLocaleString()}</span>
+                        <span class="sd-sc-range">Room to move · $${(s.max - s.initial).toLocaleString()}</span>
+                        <span class="sd-sc-enter">Enter room ${ti('arrow-right')}</span>
+                    </button>`).join('')}</div>
+                    <div class="sd-intro-foot"><p><strong>The assignment:</strong> improve the offer, protect the relationship, and leave with a defensible deal.</p><button class="sd-start" onclick="sdStart()"><span>Open the selected offer</span>${ti('arrow-right')}</button></div>
                 </div>
                 <div id="sd-game" style="display:none" class="st-screen">
-                    <div class="sd-personas">
-                        <div class="sd-persona"><div class="sd-persona-av" style="background:rgba(124,58,237,.15)" id="sd-them-av">${ti('tie')}</div><div class="sd-persona-name" id="sd-them-name">-</div><div class="sd-persona-role">Hiring Manager</div></div>
-                        <div class="sd-vs">vs</div>
-                        <div class="sd-persona"><div class="sd-persona-av" style="background:rgba(184,149,49,.12)">${ti('user')}</div><div class="sd-persona-name">You</div><div class="sd-persona-role">Candidate</div></div>
-                    </div>
-                    <div class="sd-offer-bar"><div><div class="sd-offer-lbl">Current offer</div><div class="sd-offer-val" id="sd-offer-val">$0</div><div class="sd-offer-meta" id="sd-offer-meta">-</div></div><div class="sd-round" id="sd-round-badge">Round 1 / 5</div></div>
-                    <div class="sd-chat" id="sd-chat"></div>
-                    <div class="sd-input-box" id="sd-input-box">
-                        <div class="sd-input-lbl">Your Counter-Offer</div>
-                        <div class="sd-hints" id="sd-hints"></div>
-                        <div class="sd-ci-wrap"><div class="sd-ci-prefix">$</div><input class="sd-ci-input" type="number" id="sd-counter" placeholder="120,000" min="0" step="1000"></div>
-                        <div class="sd-ci-hint" id="sd-ci-hint">Enter your desired base salary and justify below.</div>
-                        <textarea class="sd-reason" id="sd-reason" rows="2" placeholder="Explain why you deserve this..."></textarea>
-                        <div class="sd-input-actions"><button class="sd-btn-accept" onclick="sdAccept()">${ti('check')} Accept offer</button><button class="sd-btn-counter" onclick="sdCounter()">Counter ${ti('arrow-right')}</button></div>
+                    <div class="sd-game-head"><div><span>Live negotiation</span><strong id="sd-game-title">Offer review</strong></div><div class="sd-round" id="sd-round-badge">Round 1 / 5</div></div>
+                    <div class="sd-negotiation-layout">
+                        <aside class="sd-offer-panel">
+                            <div class="sd-personas">
+                                <div class="sd-persona"><div class="sd-persona-av" id="sd-them-av">${ti('tie')}</div><div><div class="sd-persona-role">Hiring Manager</div><div class="sd-persona-name" id="sd-them-name">-</div></div></div>
+                                <div class="sd-vs">Across the table</div>
+                                <div class="sd-persona sd-persona-you"><div class="sd-persona-av">${ti('user')}</div><div><div class="sd-persona-role">Candidate</div><div class="sd-persona-name">You</div></div></div>
+                            </div>
+                            <div class="sd-offer-bar">
+                                <div class="sd-offer-top"><div class="sd-offer-lbl">Current base offer</div><span>Confidential</span></div>
+                                <div class="sd-offer-val" id="sd-offer-val">$0</div>
+                                <div class="sd-offer-meta" id="sd-offer-meta">-</div>
+                                <div class="sd-offer-stamp">OFFER</div>
+                            </div>
+                            <div class="sd-table-note"><span>Negotiation note</span><p>Ask with evidence. Trade across salary, equity, flexibility, and benefits.</p></div>
+                        </aside>
+                        <section class="sd-conversation-panel">
+                            <div class="sd-conversation-head"><div><span>Conversation record</span><strong>Keep the exchange deliberate.</strong></div><i></i></div>
+                            <div class="sd-chat" id="sd-chat"></div>
+                            <div class="sd-input-box" id="sd-input-box">
+                                <div class="sd-input-lbl" id="sd-counter-label"><span>Your counter-offer</span><small>Make one clear ask</small></div>
+                                <div class="sd-hints" id="sd-hints"></div>
+                                <div class="sd-ci-wrap"><div class="sd-ci-prefix" aria-hidden="true">$</div><input class="sd-ci-input" type="number" id="sd-counter" aria-labelledby="sd-counter-label" aria-describedby="sd-ci-hint" placeholder="120,000" min="0" step="1000"></div>
+                                <div class="sd-ci-hint" id="sd-ci-hint">Enter your desired base salary and justify below.</div>
+                                <label class="sr-only" for="sd-reason">Reason for your counter-offer</label>
+                                <textarea class="sd-reason" id="sd-reason" rows="3" placeholder="Tie your ask to market evidence, scope, or measurable impact..."></textarea>
+                                <div class="sd-input-actions"><button type="button" class="sd-btn-accept" onclick="sdAccept()">${ti('check')} Accept this offer</button><button type="button" class="sd-btn-counter" onclick="sdCounter()"><span>Place counter</span>${ti('arrow-right')}</button></div>
+                            </div>
+                        </section>
                     </div>
                 </div>
                 <div id="sd-outcome" style="display:none" class="st-screen"></div>
             </div>
         </div>`;
 
-        window.sdSelectSc = (i) => { document.querySelectorAll('.sd-sc').forEach(c => c.classList.remove('sel')); document.getElementById('sd-sc-' + i).classList.add('sel'); gS.scenarioIdx = i; };
+        window.sdSelectSc = (i) => {
+            document.querySelectorAll('.sd-sc').forEach(c => { c.classList.remove('sel'); c.setAttribute('aria-pressed', 'false'); });
+            const selected = document.getElementById('sd-sc-' + i);
+            selected.classList.add('sel');
+            selected.setAttribute('aria-pressed', 'true');
+            gS.scenarioIdx = i;
+        };
 
         window.sdStart = () => {
             if (gS.scenarioIdx === undefined) sdSelectSc(0);
@@ -6647,6 +9023,7 @@ document.addEventListener('DOMContentLoaded', () => {
             gS = { sc, round: 1, maxRounds: 5, currentOffer: sc.initial, lastUserOffer: 0, scenarioIdx: gS.scenarioIdx, moves: [], aggressiveCount: 0, relationship: 82 };
             document.getElementById('sd-them-av').innerHTML = ti(sc.avatar);
             document.getElementById('sd-them-name').textContent = sc.them;
+            document.getElementById('sd-game-title').textContent = sc.name;
             sdUpdateOffer();
             document.getElementById('sd-chat').innerHTML = '';
             sdAddMsg('them', sc.openers[Math.floor(Math.random() * sc.openers.length)]);
@@ -6811,49 +9188,462 @@ document.addEventListener('DOMContentLoaded', () => {
             const betterCounter = `Given the role scope and my track record delivering measurable results, I was hoping we could get closer to $${Math.min(sc.max, sc.initial + Math.round((sc.max - sc.initial) * .75 / 1000) * 1000).toLocaleString()} base. Is there flexibility in base or sign-on to bridge the gap?`;
 
             document.getElementById('sd-outcome').innerHTML = `
-                <div class="sd-outcome-hero">
-                    <div class="sd-outcome-ico">${ti(icon)}</div>
-                    <div class="sd-outcome-title">${title}</div>
-                    <div class="sd-outcome-sub">${escapeHTML(sub)}</div>
+                <div class="sd-outcome-head">
+                    <div><span>Negotiation filed · ${escapeHTML(sc.name)}</span><h1>The offer is <em>on record.</em></h1><p>${escapeHTML(sub)}</p></div>
+                    <div class="sd-outcome-mark">${ti(icon)}<strong>${escapeHTML(title)}</strong></div>
                 </div>
-                <div class="sd-onum-grid">
-                    <div class="sd-onum"><div class="sd-onum-val">$${sc.initial.toLocaleString()}</div><div class="sd-onum-lbl">Initial offer</div></div>
-                    <div class="sd-onum"><div class="sd-onum-val" style="color:#4ade80">$${finalOffer.toLocaleString()}</div><div class="sd-onum-lbl">Final deal</div></div>
-                    <div class="sd-onum"><div class="sd-onum-val" style="color:${gain > 0 ? '#4ade80' : 'var(--t-fg)'}">+$${gain.toLocaleString()}</div><div class="sd-onum-lbl">Gained</div></div>
-                </div>
-                <div class="sd-score-grid">
-                    ${[
-                        ['Strategy', strategy],
-                        ['Evidence', evidenceQuality],
-                        ['Tone', professionalTone],
-                        ['Adapt', adaptability],
-                        ['Outcome', outcome],
-                    ].map(([label, value]) => `<div class="sd-score-card"><div class="sd-score-val">${value}</div><div class="sd-score-lbl">${label}</div></div>`).join('')}
-                </div>
-                <div class="sd-best-move">
-                    <strong style="color:#4ade80">Best move:</strong> ${bestMove ? `Round ${bestMove.round}, asking $${bestMove.ask.toLocaleString()} with ${bestMove.review.score}/100 reasoning.` : 'You accepted before countering.'}<br>
-                    <strong style="color:#fbbf24">Missed opportunity:</strong> ${escapeHTML(missedOpportunity)}<br>
-                    <strong style="color:#93c5fd">Better counter:</strong> ${escapeHTML(betterCounter)}
-                </div>
-                <div class="sd-lessons">
-                    <div class="sd-lessons-title">${ti('bulb')} Coaching Takeaways</div>
-                    ${lessons.map(l => `<div class="sd-lesson"><span>${ti(l.ico)}</span>${escapeHTML(l.text)}</div>`).join('')}
-                </div>
-                <div class="sd-cta-row">
-                    <button class="sd-btn-primary" onclick="sdRestart()">Try another scenario</button>
-                    <button class="sd-btn-secondary" onclick="window.nav('games')">${ti('arrow-left')} Back to Games</button>
+                <div class="sd-outcome-layout">
+                    <aside class="sd-deal-file">
+                        <div class="sd-file-tab">Final agreement</div>
+                        <div class="sd-file-stamp">${type === 'accepted' ? 'DEAL' : 'CLOSED'}</div>
+                        <div class="sd-onum-grid">
+                            <div class="sd-onum"><div class="sd-onum-lbl">Initial offer</div><div class="sd-onum-val">$${sc.initial.toLocaleString()}</div></div>
+                            <div class="sd-onum sd-onum-final"><div class="sd-onum-lbl">Final deal</div><div class="sd-onum-val">$${finalOffer.toLocaleString()}</div></div>
+                            <div class="sd-onum"><div class="sd-onum-lbl">Value gained</div><div class="sd-onum-val">+$${gain.toLocaleString()}</div></div>
+                        </div>
+                        <div class="sd-file-meta"><span>Rounds used</span><strong>${gS.round} / ${gS.maxRounds}</strong><span>Relationship</span><strong>${gS.relationship} / 100</strong></div>
+                    </aside>
+                    <section class="sd-coaching-ledger">
+                        <div class="sd-ledger-head"><div><span>Coach’s ledger</span><strong>How you moved the room</strong></div><div class="sd-total-score"><b>${score}</b><small>overall</small></div></div>
+                        <div class="sd-score-grid">
+                            ${[
+                                ['Strategy', strategy],
+                                ['Evidence', evidenceQuality],
+                                ['Tone', professionalTone],
+                                ['Adapt', adaptability],
+                                ['Outcome', outcome],
+                            ].map(([label, value], i) => `<div class="sd-score-card"><span>0${i + 1}</span><div><div class="sd-score-lbl">${label}</div><div class="sd-score-track"><i style="width:${value}%"></i></div></div><div class="sd-score-val">${value}</div></div>`).join('')}
+                        </div>
+                        <div class="sd-best-move">
+                            <div><span>Best move</span><p>${bestMove ? `Round ${bestMove.round}, asking $${bestMove.ask.toLocaleString()} with ${bestMove.review.score}/100 reasoning.` : 'You accepted before countering.'}</p></div>
+                            <div><span>Missed opportunity</span><p>${escapeHTML(missedOpportunity)}</p></div>
+                            <div><span>Stronger counter</span><p>${escapeHTML(betterCounter)}</p></div>
+                        </div>
+                        <div class="sd-lessons">
+                            <div class="sd-lessons-title">Coaching takeaways</div>
+                            ${lessons.map((l, i) => `<div class="sd-lesson"><b>0${i + 1}</b><span>${ti(l.ico)}</span><p>${escapeHTML(l.text)}</p></div>`).join('')}
+                        </div>
+                        <div class="sd-cta-row">
+                            <button class="sd-btn-secondary" onclick="window.nav('games')">${ti('arrow-left')} Training floor</button>
+                            <button class="sd-btn-primary" onclick="sdRestart()"><span>Try another offer</span>${ti('arrow-right')}</button>
+                        </div>
+                    </section>
                 </div>`;
             setTimeout(() => sdShow('sd-outcome'), 1600);
         }
 
         window.sdRestart = () => { gS = {}; sdShow('sd-intro'); };
-        function sdShow(id) { ['sd-intro', 'sd-game', 'sd-outcome'].forEach(s => { document.getElementById(s).style.display = s === id ? 'block' : 'none'; }); }
+        function sdShow(id) {
+            ['sd-intro', 'sd-game', 'sd-outcome'].forEach(s => {
+                const screen = document.getElementById(s);
+                screen.classList.toggle('is-active', s === id);
+                screen.style.setProperty('display', s === id ? 'block' : 'none', 'important');
+            });
+        }
+        sdShow('sd-intro');
     }
 
 
 
     // Init app
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && state.currentSessionId && state.sessionStatus === 'in_progress') {
+            persistSessionCheckpoint('in_progress', {}, { keepalive: true })
+                .catch(error => console.error('Background checkpoint failed:', error));
+        }
+    });
+    window.addEventListener('pagehide', () => {
+        if (state.currentSessionId && state.sessionStatus === 'in_progress') {
+            persistSessionCheckpoint('in_progress', {}, { keepalive: true })
+                .catch(() => null);
+        }
+    });
+    // The desktop shell calls this before stopping the local backend. Keeping
+    // the hook explicit lets the shell give the final checkpoint a brief,
+    // deterministic grace period instead of relying only on page teardown.
+    window.icCheckpointBeforeExit = () => {
+        const checkpoint = state.currentSessionId && state.sessionStatus === 'in_progress'
+            ? persistSessionCheckpoint('in_progress', {}, { keepalive: true })
+            : Promise.resolve(true);
+        const preferences = typeof durableStorage.flush === 'function'
+            ? durableStorage.flush()
+            : Promise.resolve(true);
+        return Promise.allSettled([checkpoint, preferences])
+            .then((results) => results.every(result => result.status === 'fulfilled'));
+    };
     window.state = state; // expose for alpine
     window.nav = navigate;
-    navigate('hero');
+    async function initializeApp() {
+        // Change this single value to "ivory" to restore the original opening.
+        const OPENING_VARIANT = 'dark';
+        const reducedOpeningMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        const openingRevealMs = 1800;
+        const openingHoldMs = 1400;
+        const openingTransitionMs = 3000;
+        const reducedMotionFadeMs = 120;
+        const openingMarkSrc = '/static/assets/brand/interview-chameleon-mark.png';
+        const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
+        const nextFrame = () => new Promise(resolve => window.requestAnimationFrame(resolve));
+        const finishAnimation = (animation, safetyMs) => Promise.race([
+            animation.finished.catch(() => null),
+            wait(safetyMs),
+        ]);
+        // Decode the raster mask before the reveal begins. Without this guard a
+        // cold disk/cache can briefly show the wordmark alone, then pop the
+        // chameleon into the same lockup after the animation has already begun.
+        const openingMarkReady = new Promise(resolve => {
+            const preload = new Image();
+            let settled = false;
+            const settle = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
+            preload.addEventListener('load', settle, { once: true });
+            preload.addEventListener('error', settle, { once: true });
+            preload.src = openingMarkSrc;
+            if (typeof preload.decode === 'function') preload.decode().then(settle, () => null);
+            window.setTimeout(settle, 1500);
+        });
+        const opening = document.createElement('div');
+        opening.className = `mm-opening mm-opening--${OPENING_VARIANT}`;
+        opening.dataset.openingPhase = 'preparing';
+        opening.innerHTML = `
+            <div class="mm-opening-scrim" aria-hidden="true"></div>
+            <svg class="mm-opening-stage" viewBox="0 0 1366 768" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                    <radialGradient id="mm-opening-dark-surface" cx="45%" cy="47%" r="76%">
+                        <stop offset="0" stop-color="#21130e"></stop>
+                        <stop offset="0.38" stop-color="#121311"></stop>
+                        <stop offset="1" stop-color="#080908"></stop>
+                    </radialGradient>
+                    <mask id="mm-opening-mark-alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="1366" height="768" style="mask-type:alpha">
+                        <image class="mm-opening-mark-alpha-image" href="${openingMarkSrc}"></image>
+                    </mask>
+                    <g id="mm-opening-lockup-geometry">
+                        <g class="mm-opening-geometry-mark">
+                            <rect class="mm-opening-geometry-mark-fill" fill="currentColor" mask="url(#mm-opening-mark-alpha)"></rect>
+                        </g>
+                        <text class="mm-opening-geometry-wordmark" fill="currentColor" dominant-baseline="text-before-edge">Interview Chameleon</text>
+                        <text class="mm-opening-geometry-tagline" fill="currentColor" dominant-baseline="text-before-edge">Private practice. A brighter you.</text>
+                    </g>
+                    <mask id="mm-opening-surface-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1366" height="768" style="mask-type:luminance">
+                        <rect class="mm-opening-mask-base" width="1366" height="768" fill="#fff"></rect>
+                        <use class="mm-opening-mask-reference" href="#mm-opening-lockup-geometry"></use>
+                    </mask>
+                </defs>
+                <rect class="mm-opening-tunnel-surface" width="1366" height="768" fill="url(#mm-opening-dark-surface)" mask="url(#mm-opening-surface-mask)"></rect>
+                <g class="mm-opening-visible-lockup">
+                    <use class="mm-opening-visible-silhouette" href="#mm-opening-lockup-geometry"></use>
+                    <image class="mm-opening-visible-mark-details" href="${openingMarkSrc}"></image>
+                </g>
+            </svg>
+            <span class="sr-only" role="status" aria-live="polite">Starting Interview Chameleon</span>`;
+        document.querySelector('.mm-opening')?.remove();
+        document.documentElement.classList.add('ic-opening');
+        mainContent.setAttribute('inert', '');
+        document.body.appendChild(opening);
+        const layoutOpening = () => {
+            const stage = opening.querySelector('.mm-opening-stage');
+            const visibleLockup = opening.querySelector('.mm-opening-visible-lockup');
+            const maskReference = opening.querySelector('.mm-opening-mask-reference');
+            const markAlphaImage = opening.querySelector('.mm-opening-mark-alpha-image');
+            const visibleMarkDetails = opening.querySelector('.mm-opening-visible-mark-details');
+            const markFill = opening.querySelector('.mm-opening-geometry-mark-fill');
+            const wordmark = opening.querySelector('.mm-opening-geometry-wordmark');
+            const tagline = opening.querySelector('.mm-opening-geometry-tagline');
+            const tunnelSurface = opening.querySelector('.mm-opening-tunnel-surface');
+            if (!stage || !visibleLockup || !maskReference || !markAlphaImage || !visibleMarkDetails || !markFill || !wordmark || !tagline || !tunnelSurface) return null;
+            const viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+            const viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+            stage.setAttribute('viewBox', `0 0 ${viewportWidth} ${viewportHeight}`);
+            opening.querySelectorAll('#mm-opening-mark-alpha,#mm-opening-surface-mask').forEach(mask => {
+                mask.setAttribute('width', String(viewportWidth));
+                mask.setAttribute('height', String(viewportHeight));
+            });
+            opening.querySelectorAll('.mm-opening-mask-base,.mm-opening-tunnel-surface').forEach(rect => {
+                rect.setAttribute('width', String(viewportWidth));
+                rect.setAttribute('height', String(viewportHeight));
+            });
+
+            const clamp = (minimum, value, maximum) => Math.min(maximum, Math.max(minimum, value));
+            const stacked = viewportWidth <= 620;
+            const markSize = stacked
+                ? clamp(94, viewportWidth * .27, 126)
+                : clamp(112, viewportWidth * .14, 168);
+            let wordmarkSize = clamp(34, viewportWidth * .05, 58);
+            const canvasContext = document.createElement('canvas').getContext('2d');
+            const textMetrics = size => {
+                const letterSpacing = size * -.045;
+                canvasContext.font = `700 ${size}px Georgia, "Times New Roman", serif`;
+                const measure = text => canvasContext.measureText(text).width + letterSpacing * Math.max(0, text.length - 1);
+                return {
+                    full: measure('Interview Chameleon'),
+                    prefix: measure('Interview '),
+                    focus: measure('C'),
+                };
+            };
+            let metrics = textMetrics(wordmarkSize);
+            if (stacked && metrics.full > viewportWidth - 48) {
+                wordmarkSize *= (viewportWidth - 48) / metrics.full;
+                metrics = textMetrics(wordmarkSize);
+            }
+            const taglineSize = clamp(12, wordmarkSize * .27, 14);
+            const wordmarkHeight = wordmarkSize * .96;
+            const taglineHeight = taglineSize * 1.35;
+            const taglineGap = 13;
+            const copyHeight = wordmarkHeight + taglineGap + taglineHeight;
+            const gap = clamp(22, viewportWidth * .04, 42);
+            const totalWidth = markSize + gap + metrics.full;
+            const textX = stacked ? (viewportWidth - metrics.full) / 2 : (viewportWidth - totalWidth) / 2 + markSize + gap;
+            const textY = stacked
+                ? viewportHeight / 2 + markSize * .18
+                : (viewportHeight - copyHeight) / 2;
+            const markX = stacked ? (viewportWidth - markSize) / 2 : (viewportWidth - totalWidth) / 2;
+            const markY = stacked ? textY - markSize - 24 : (viewportHeight - markSize) / 2;
+            [markAlphaImage, visibleMarkDetails, markFill].forEach(target => {
+                target.setAttribute('x', String(markX));
+                target.setAttribute('y', String(markY));
+                target.setAttribute('width', String(markSize));
+                target.setAttribute('height', String(markSize));
+            });
+            wordmark.setAttribute('x', String(textX));
+            wordmark.setAttribute('y', String(textY));
+            wordmark.style.fontSize = `${wordmarkSize}px`;
+            tagline.setAttribute('x', String(textX));
+            tagline.setAttribute('y', String(textY + wordmarkHeight + taglineGap));
+            tagline.style.fontSize = `${taglineSize}px`;
+
+            // The tunnel is centred in the filled left stroke of the C, not in
+            // its counter. At the final scale that real glyph stroke clears all
+            // four corners, so no artificial aperture is needed.
+            const originX = textX + metrics.prefix + Math.max(2, metrics.focus * .13);
+            const originY = textY + wordmarkSize * .51;
+            const farthestCorner = Math.max(
+                Math.hypot(originX, originY),
+                Math.hypot(viewportWidth - originX, originY),
+                Math.hypot(originX, viewportHeight - originY),
+                Math.hypot(viewportWidth - originX, viewportHeight - originY),
+            );
+            const focusStrokeRadius = Math.max(1.5, Math.min(metrics.focus * .13, wordmarkSize * .075));
+            const finalScale = Math.ceil(((farthestCorner + 64) / focusStrokeRadius) * 1.2);
+            [visibleLockup, maskReference].forEach(target => {
+                target.style.transformBox = 'view-box';
+                target.style.transformOrigin = `${originX}px ${originY}px`;
+            });
+            opening.dataset.openingFinalScale = String(finalScale);
+            return { visibleLockup, maskReference, tunnelSurface, finalScale };
+        };
+        const finishOpening = () => {
+            opening.dataset.openingPhase = 'done';
+            opening.remove();
+            mainContent.removeAttribute('inert');
+            document.documentElement.classList.remove('ic-opening');
+            document.body.classList.remove('ic-booting');
+        };
+        const waitForDestinationPaint = async () => {
+            const fontReady = document.fonts?.ready
+                ? document.fonts.ready.catch(() => null)
+                : Promise.resolve();
+            const imageReady = Array.from(mainContent.querySelectorAll('img'))
+                .filter(image => {
+                    const box = image.getBoundingClientRect();
+                    return box.width > 0 && box.height > 0 && !image.complete;
+                })
+                .map(image => typeof image.decode === 'function'
+                    ? image.decode().catch(() => null)
+                    : new Promise(resolve => image.addEventListener('load', resolve, { once: true })));
+            await Promise.race([
+                Promise.allSettled([fontReady, ...imageReady]),
+                wait(750),
+            ]);
+            await nextFrame();
+            await nextFrame();
+        };
+        const buildScaleFrames = finalScale => {
+            const offsets = [0, .18, .4, .6, .8, 1];
+            const scales = [1, 1.15, 2.8, 8, 30, finalScale];
+            const intervals = offsets.slice(0, -1).map((offset, index) => offsets[index + 1] - offset);
+            const slopes = intervals.map((interval, index) => (scales[index + 1] - scales[index]) / interval);
+            const tangents = scales.map((_, index) => {
+                if (index === 0) return slopes[0];
+                if (index === scales.length - 1) return slopes[slopes.length - 1];
+                return (slopes[index - 1] + slopes[index]) / 2;
+            });
+            slopes.forEach((slope, index) => {
+                if (slope === 0) {
+                    tangents[index] = 0;
+                    tangents[index + 1] = 0;
+                    return;
+                }
+                const left = tangents[index] / slope;
+                const right = tangents[index + 1] / slope;
+                const magnitude = Math.hypot(left, right);
+                if (magnitude > 3) {
+                    const factor = 3 / magnitude;
+                    tangents[index] = factor * left * slope;
+                    tangents[index + 1] = factor * right * slope;
+                }
+            });
+            const sampleOffsets = Array.from({ length: 61 }, (_, index) => index / 60);
+            const times = [...new Set([...sampleOffsets, ...offsets])].sort((left, right) => left - right);
+            return times.map(time => {
+                let segment = offsets.length - 2;
+                for (let index = 0; index < offsets.length - 1; index += 1) {
+                    if (time <= offsets[index + 1]) {
+                        segment = index;
+                        break;
+                    }
+                }
+                const span = offsets[segment + 1] - offsets[segment];
+                const local = span ? (time - offsets[segment]) / span : 0;
+                const local2 = local * local;
+                const local3 = local2 * local;
+                const scale = (2 * local3 - 3 * local2 + 1) * scales[segment]
+                    + (local3 - 2 * local2 + local) * span * tangents[segment]
+                    + (-2 * local3 + 3 * local2) * scales[segment + 1]
+                    + (local3 - local2) * span * tangents[segment + 1];
+                // Complete the visible-to-cutout dissolve while the lockup is
+                // still nearly stationary. Chromium/WebView2 can rasterize a
+                // transformed SVG <use> inside a mask a fraction differently
+                // from the visible <use>; cross-fading them deep into the zoom
+                // therefore reads as two wordmarks. Once this brief hand-off is
+                // complete, only the transparent cutout continues through the
+                // long tunnel move.
+                const fadeTime = Math.min(1, Math.max(0, time / .14));
+                const transparency = fadeTime * fadeTime * (3 - 2 * fadeTime);
+                return { offset: time, scale, transparency };
+            });
+        };
+        const setupCheck = (async () => {
+            let destination = 'hero';
+            await durableStorage.ready;
+            try {
+                const response = await fetch('/api/models');
+                if (!response.ok) throw new Error(`Model setup check failed (${response.status})`);
+                const data = await response.json();
+                state.selectedModel = data.selected_model || DEFAULT_MODEL_ID;
+                state.modelCatalog = Array.isArray(data.catalog) ? data.catalog : state.modelCatalog;
+                state.modelSetupCompleted = Boolean(data.model_setup_completed);
+                if (!data.model_setup_completed || !data.selected_ready) destination = 'models';
+            } catch (error) {
+                console.error('Model setup check failed:', error);
+                destination = 'models';
+            }
+            return destination;
+        })();
+        const destinationReady = setupCheck.then(async destination => {
+            await navigate(destination);
+            await waitForDestinationPaint();
+            return destination;
+        });
+        await openingMarkReady;
+        await nextFrame();
+        const openingLayout = layoutOpening();
+        if (!openingLayout) {
+            const destination = await destinationReady;
+            finishOpening();
+            if (destination === 'hero') checkForRecoverableSession();
+            return;
+        }
+        const { visibleLockup, maskReference, tunnelSurface, finalScale } = openingLayout;
+        if (reducedOpeningMotion) {
+            visibleLockup.style.opacity = '1';
+            opening.dataset.openingPhase = 'reduced-motion';
+            const destination = await destinationReady;
+            const fade = opening.animate([
+                { opacity: 1 },
+                { opacity: 0 },
+            ], {
+                duration: reducedMotionFadeMs,
+                easing: 'linear',
+                fill: 'forwards',
+            });
+            await finishAnimation(fade, reducedMotionFadeMs + 80);
+            finishOpening();
+            if (destination === 'hero') checkForRecoverableSession();
+            return;
+        }
+        opening.dataset.openingPhase = 'reveal';
+        const reveal = visibleLockup.animate([
+            { opacity: 0, transform: 'translateY(8px) scale(.94)' },
+            { opacity: .42, transform: 'translateY(3px) scale(.975)', offset: .36 },
+            { opacity: 1, transform: 'translateY(0) scale(1)' },
+        ], {
+            duration: openingRevealMs,
+            easing: 'cubic-bezier(.2, .82, .22, 1)',
+            fill: 'forwards',
+        });
+        await finishAnimation(reveal, openingRevealMs + 180);
+        // Commit the reveal's final frame, then remove its filled animation so
+        // it cannot compete with the tunnel animation in the compositor.
+        visibleLockup.style.opacity = '1';
+        visibleLockup.style.transform = 'scale(1)';
+        reveal.cancel();
+        opening.dataset.openingPhase = 'hold';
+        const hold = wait(openingHoldMs);
+        const [, initialDestination] = await Promise.all([hold, destinationReady]);
+        if (OPENING_VARIANT === 'ivory') {
+            opening.dataset.openingPhase = 'ivory-transition';
+            opening.classList.add('is-entering-app');
+            const ivoryTiming = { duration: 900, easing: 'cubic-bezier(.4, 0, .16, 1)', fill: 'forwards' };
+            const ivoryZoom = visibleLockup.animate([
+                { opacity: 1, transform: 'scale(1)' },
+                { opacity: 0, transform: 'scale(7.6)' },
+            ], ivoryTiming);
+            const ivoryFade = opening.animate([
+                { opacity: 1 },
+                { opacity: 0 },
+            ], ivoryTiming);
+            await Promise.race([
+                Promise.all([
+                    ivoryZoom.finished.catch(() => null),
+                    ivoryFade.finished.catch(() => null),
+                ]),
+                wait(1050),
+            ]);
+            await nextFrame();
+            finishOpening();
+            if (initialDestination === 'hero') checkForRecoverableSession();
+            return;
+        }
+        const scaleFrames = buildScaleFrames(finalScale);
+        const visibleFrames = scaleFrames.map(({ offset, scale, transparency }) => ({
+            offset,
+            opacity: 1 - transparency,
+            transform: `scale(${scale})`,
+        }));
+        const maskFrames = scaleFrames.map(({ offset, scale, transparency }) => ({
+            offset,
+            opacity: transparency,
+            transform: `scale(${scale})`,
+        }));
+        opening.dataset.openingPhase = 'tunnel';
+        opening.classList.add('is-entering-app');
+        const timing = { duration: openingTransitionMs, easing: 'linear', fill: 'forwards' };
+        const visibleTunnel = visibleLockup.animate(visibleFrames, timing);
+        const transparentTunnel = maskReference.animate(maskFrames, timing);
+        // The transformed C is a finite, non-convex mask. At extreme scale a
+        // distant edge can briefly sweep back across the viewport on some DPI
+        // and font combinations. Fade the dark surface after the tunnel has
+        // visually taken over so that edge can never cover the app again.
+        const surfaceRelease = tunnelSurface.animate([
+            { offset: 0, opacity: 1 },
+            { offset: .82, opacity: 1 },
+            { offset: .94, opacity: 0 },
+            { offset: 1, opacity: 0 },
+        ], timing);
+        await Promise.race([
+            Promise.all([
+                visibleTunnel.finished.catch(() => null),
+                transparentTunnel.finished.catch(() => null),
+                surfaceRelease.finished.catch(() => null),
+            ]),
+            wait(openingTransitionMs + 350),
+        ]);
+        await nextFrame();
+        finishOpening();
+        if (initialDestination === 'hero') checkForRecoverableSession();
+    }
+    initializeApp();
 });

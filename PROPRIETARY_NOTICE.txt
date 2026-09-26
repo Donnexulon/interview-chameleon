@@ -1,0 +1,15 @@
+INTERVIEW CHAMELEON — PROPRIETARY BETA
+
+Copyright (c) 2026. All rights reserved.
+
+This software and its source code are confidential and proprietary. The beta is
+provided only to invited testers for evaluation. No permission is granted to
+copy, redistribute, reverse engineer, resell, sublicense, publish, or use the
+software to create a competing product except where such a restriction is
+prohibited by applicable law.
+
+Third-party components remain subject to their own licenses. See
+THIRD_PARTY_NOTICES.md in the installation package.
+
+THE SOFTWARE IS PROVIDED AS-IS FOR BETA TESTING, WITHOUT WARRANTY TO THE
+MAXIMUM EXTENT PERMITTED BY LAW.

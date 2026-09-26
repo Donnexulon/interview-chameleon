@@ -1,0 +1,208 @@
+[
+  {
+    "id": "general_senior_pm_weak",
+    "comparison_group": "general_senior_pm",
+    "quality": "weak",
+    "target_role": "Senior Product Manager",
+    "job_description": "Own product strategy, prioritize a roadmap, align engineering and design, and measure customer outcomes.",
+    "module": "general",
+    "settings": {
+      "difficulty": "hard",
+      "duration": "standard",
+      "industry": "software",
+      "interviewer_style": "strict",
+      "faang_mode": true,
+      "interruptions_enabled": false
+    },
+    "messages": [
+      {"role": "assistant", "content": "Tell me about a difficult product decision you owned."},
+      {"role": "user", "content": "We had a difficult launch. I spoke with the team and we made the right decision. It turned out fine."},
+      {"role": "assistant", "content": "How do you know whether a roadmap decision succeeded?"},
+      {"role": "user", "content": "I look at the usual metrics and ask people whether they liked it."}
+    ],
+    "expected_score": {"min": 20, "max": 52}
+  },
+  {
+    "id": "general_senior_pm_strong",
+    "comparison_group": "general_senior_pm",
+    "quality": "strong",
+    "target_role": "Senior Product Manager",
+    "job_description": "Own product strategy, prioritize a roadmap, align engineering and design, and measure customer outcomes.",
+    "module": "general",
+    "settings": {
+      "difficulty": "hard",
+      "duration": "standard",
+      "industry": "software",
+      "interviewer_style": "strict",
+      "faang_mode": true,
+      "interruptions_enabled": false
+    },
+    "messages": [
+      {"role": "assistant", "content": "Tell me about a difficult product decision you owned."},
+      {"role": "user", "content": "Two weeks before launch, research showed our new permissions flow confused administrators. I owned the go/no-go call. I compared support risk, contract commitments, and engineering cost, then proposed shipping the core workflow while holding the risky bulk-edit feature. I aligned sales and engineering in a 30-minute decision review. We met the contract date, cut permission-related tickets 34% versus beta, and shipped bulk editing three weeks later after usability testing."},
+      {"role": "assistant", "content": "How do you know whether a roadmap decision succeeded?"},
+      {"role": "user", "content": "Before committing, I write the user behavior we expect to change, a primary outcome metric, guardrails, and a review date. For our onboarding redesign, activation was the primary metric and early churn plus support contacts were guardrails. A four-week experiment increased activation from 41% to 53% without raising churn, so we expanded it. I also documented the assumptions that were wrong so the next roadmap cycle used better evidence."}
+    ],
+    "expected_score": {"min": 76, "max": 94}
+  },
+  {
+    "id": "roleplay_support_weak",
+    "comparison_group": "roleplay_support",
+    "quality": "weak",
+    "target_role": "Customer Support Manager",
+    "job_description": "De-escalate customer issues, coach agents, resolve conflicts, and protect long-term relationships.",
+    "module": "roleplay",
+    "settings": {"difficulty": "medium", "duration": "quick", "industry": "software", "interviewer_style": "stress", "faang_mode": false, "interruptions_enabled": true},
+    "messages": [
+      {"role": "assistant", "content": "I am an angry customer whose account was charged twice. Handle the call."},
+      {"role": "user", "content": "The policy says refunds take time. I would tell them to calm down and submit a ticket. If they keep shouting I would end the call."},
+      {"role": "assistant", "content": "A high-performing agent rejects your feedback in front of the team. What do you do?"},
+      {"role": "user", "content": "I am the manager, so they need to listen. I would remind them who makes the decisions."}
+    ],
+    "expected_score": {"min": 5, "max": 39}
+  },
+  {
+    "id": "roleplay_support_strong",
+    "comparison_group": "roleplay_support",
+    "quality": "strong",
+    "target_role": "Customer Support Manager",
+    "job_description": "De-escalate customer issues, coach agents, resolve conflicts, and protect long-term relationships.",
+    "module": "roleplay",
+    "settings": {"difficulty": "medium", "duration": "quick", "industry": "software", "interviewer_style": "stress", "faang_mode": false, "interruptions_enabled": true},
+    "messages": [
+      {"role": "assistant", "content": "I am an angry customer whose account was charged twice. Handle the call."},
+      {"role": "user", "content": "I can hear how frustrating it is to see two charges, especially when you expected one. I would let the customer explain what they see without interrupting, repeat the issue back to confirm I understood it, and ask which outcome they need most urgently. I would verify both transaction IDs and whether one is a pending authorization. If both settled, I would own the correction, start the refund during the call, give a specific timeline and reference number, and arrange an update within 24 hours. Then I would review the payment logs so we prevent a repeat rather than treating this as only one ticket."},
+      {"role": "assistant", "content": "A high-performing agent rejects your feedback in front of the team. What do you do?"},
+      {"role": "user", "content": "I would thank them for raising the concern and acknowledge that disagreeing publicly can feel risky, then keep the meeting focused and schedule a private conversation rather than trying to win an argument. In private I would let them explain without interruption, summarize their point before responding, describe the specific behavior and customer impact, and agree together on one observable change. I used that approach with a senior agent last year; their reopen rate fell from 18% to 9% over six weeks and they later helped teach the coaching pattern to the team."}
+    ],
+    "expected_score": {"min": 76, "max": 94}
+  },
+  {
+    "id": "visual_product_designer_weak",
+    "comparison_group": "visual_product_designer",
+    "quality": "weak",
+    "target_role": "Product Designer",
+    "job_description": "Design accessible end-to-end product flows and explain hierarchy, states, and trade-offs.",
+    "module": "visual",
+    "settings": {"difficulty": "medium", "duration": "standard", "industry": "software", "interviewer_style": "calm", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "Verbally sketch a checkout flow for a food delivery app."},
+      {"role": "user", "content": "There is a cart screen, then address and payment, then a big order button. I would make it clean and modern."},
+      {"role": "assistant", "content": "How would the flow handle an unavailable item?"},
+      {"role": "user", "content": "I would show an error and let the user go back."}
+    ],
+    "expected_score": {"min": 25, "max": 52}
+  },
+  {
+    "id": "visual_product_designer_strong",
+    "comparison_group": "visual_product_designer",
+    "quality": "strong",
+    "target_role": "Product Designer",
+    "job_description": "Design accessible end-to-end product flows and explain hierarchy, states, and trade-offs.",
+    "module": "visual",
+    "settings": {"difficulty": "medium", "duration": "standard", "industry": "software", "interviewer_style": "calm", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "Verbally sketch a checkout flow for a food delivery app."},
+      {"role": "user", "content": "I would draw a four-step vertical flow: cart review, delivery details, payment, and confirmation. The cart keeps the price summary and primary Continue action fixed near the bottom while item edits remain secondary. Delivery shows saved addresses, an accessible map alternative, ETA, and instructions. Payment exposes the final total before authorization and preserves entered data on failure. Confirmation leads with order status and a clearly labeled tracking action. I would annotate loading, empty, error, and back-navigation states beside each screen."},
+      {"role": "assistant", "content": "How would the flow handle an unavailable item?"},
+      {"role": "user", "content": "Before payment, the affected row becomes a high-contrast alert that names the item and explains what changed. The user can remove it, choose a suggested substitute with price and allergen differences, or cancel. The total updates immediately and is announced to screen readers. I would avoid silently substituting, and I would preserve the rest of the cart so recovery takes one decision rather than restarting checkout."}
+    ],
+    "expected_score": {"min": 76, "max": 94}
+  },
+  {
+    "id": "technical_backend_weak",
+    "comparison_group": "technical_backend",
+    "quality": "weak",
+    "target_role": "Senior Backend Engineer",
+    "job_description": "Design reliable distributed services, diagnose database performance, and explain technical trade-offs.",
+    "module": "technical",
+    "settings": {"difficulty": "hard", "duration": "extended", "industry": "software", "interviewer_style": "calm", "faang_mode": true, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "How would you diagnose and optimize a slow SQL query on a large table?"},
+      {"role": "user", "content": "I would add indexes to every column because an index makes every query O(1). If that is still slow I would move the table into memory."},
+      {"role": "assistant", "content": "Design a distributed rate limiter for an API."},
+      {"role": "user", "content": "Each server can keep a counter in a local variable and reset it every minute. Since requests are random, the totals should average out across servers."}
+    ],
+    "expected_score": {"min": 4, "max": 35}
+  },
+  {
+    "id": "technical_backend_strong",
+    "comparison_group": "technical_backend",
+    "quality": "strong",
+    "target_role": "Senior Backend Engineer",
+    "job_description": "Design reliable distributed services, diagnose database performance, and explain technical trade-offs.",
+    "module": "technical",
+    "settings": {"difficulty": "hard", "duration": "extended", "industry": "software", "interviewer_style": "calm", "faang_mode": true, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "How would you diagnose and optimize a slow SQL query on a large table?"},
+      {"role": "user", "content": "I would capture the exact query and parameters, then use EXPLAIN ANALYZE to separate bad cardinality estimates, scans, joins, sorting, and lock waits. I would compare the predicate and ordering to existing indexes before adding a narrow composite or covering index, because extra indexes increase write cost. I would test with production-like distribution, update statistics if estimates are stale, and check rows read rather than only elapsed time. If the access pattern still cannot scale, I would consider keyset pagination, precomputation, or partitioning and verify p95 latency plus write regression before rollout."},
+      {"role": "assistant", "content": "Design a distributed rate limiter for an API."},
+      {"role": "user", "content": "I would start with a token bucket keyed by tenant and route, stored in Redis close to the API tier. One Lua script would refill and consume atomically using server time, returning remaining tokens and retry-after. I would define behavior for Redis failure: fail open for low-risk reads but fail closed or use a small local emergency budget for costly writes. Hot tenants can be sharded by stable key, and limits need versioned configuration. I would test burst fairness, clock assumptions, failover, and p99 overhead, then monitor allowed, rejected, and backend-error decisions separately."}
+    ],
+    "expected_score": {"min": 80, "max": 96}
+  },
+  {
+    "id": "casestudy_strategy_weak",
+    "comparison_group": "casestudy_strategy",
+    "quality": "weak",
+    "target_role": "Strategy Manager",
+    "job_description": "Structure ambiguous growth problems, use quantitative evidence, and make actionable recommendations.",
+    "module": "casestudy",
+    "settings": {"difficulty": "hard", "duration": "standard", "industry": "finance", "interviewer_style": "executive", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "A digital bank is considering entering a new country. How would you assess the opportunity?"},
+      {"role": "user", "content": "It is a big country, so I would launch there and advertise heavily. Digital banking is growing everywhere."},
+      {"role": "assistant", "content": "The first pilot has expensive customer acquisition. What do you recommend?"},
+      {"role": "user", "content": "I would spend more so the brand becomes known. We can worry about profit later."}
+    ],
+    "expected_score": {"min": 10, "max": 40}
+  },
+  {
+    "id": "casestudy_strategy_strong",
+    "comparison_group": "casestudy_strategy",
+    "quality": "strong",
+    "target_role": "Strategy Manager",
+    "job_description": "Structure ambiguous growth problems, use quantitative evidence, and make actionable recommendations.",
+    "module": "casestudy",
+    "settings": {"difficulty": "hard", "duration": "standard", "industry": "finance", "interviewer_style": "executive", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "A digital bank is considering entering a new country. How would you assess the opportunity?"},
+      {"role": "user", "content": "I would make the decision across market attractiveness, ability to win, economics, and execution risk. I would size reachable adults by segment rather than total population, then estimate funded-account conversion, balances, interchange or lending revenue, losses, support, and compliance cost. I would compare incumbent pain points and acquisition channels, interview regulators early, and test whether our existing underwriting transfers. My initial recommendation would be a narrow salaried-professional pilot with explicit gates for six-month retention, contribution margin, fraud loss, and regulatory readiness before a national launch."},
+      {"role": "assistant", "content": "The first pilot has expensive customer acquisition. What do you recommend?"},
+      {"role": "user", "content": "I would decompose CAC by channel, segment, approval rate, and funded-account rate, then compare it with contribution margin and payback rather than treating CAC alone as failure. If referral customers cost $45 and retain at 70% while paid-social customers cost $180 and retain at 38%, I would pause broad paid social, double down on referrals and employer partnerships, and run two landing-page tests. I would set an eight-week gate of payback under 12 months and sufficient fraud-adjusted margin; if no segment clears it, I would recommend stopping the entry."}
+    ],
+    "expected_score": {"min": 79, "max": 95}
+  },
+  {
+    "id": "salary_analyst_weak",
+    "comparison_group": "salary_analyst",
+    "quality": "weak",
+    "target_role": "Senior Data Analyst",
+    "job_description": "Negotiate a competitive offer professionally using relevant evidence and flexible trade-offs.",
+    "module": "salary",
+    "settings": {"difficulty": "medium", "duration": "quick", "industry": "finance", "interviewer_style": "strict", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "We can offer $92,000 base. How would you respond?"},
+      {"role": "user", "content": "That is too low. Pay me more or I will go somewhere else."},
+      {"role": "assistant", "content": "The base budget is fixed. Is there anything else you would consider?"},
+      {"role": "user", "content": "No. Fine, I accept it then."}
+    ],
+    "expected_score": {"min": 8, "max": 40}
+  },
+  {
+    "id": "salary_analyst_strong",
+    "comparison_group": "salary_analyst",
+    "quality": "strong",
+    "target_role": "Senior Data Analyst",
+    "job_description": "Negotiate a competitive offer professionally using relevant evidence and flexible trade-offs.",
+    "module": "salary",
+    "settings": {"difficulty": "medium", "duration": "quick", "industry": "finance", "interviewer_style": "strict", "faang_mode": false, "interruptions_enabled": false},
+    "messages": [
+      {"role": "assistant", "content": "We can offer $92,000 base. How would you respond?"},
+      {"role": "user", "content": "I am excited about the role and the team. Based on the scope, the posted range, and my experience leading a forecasting redesign that reduced monthly close work by 30%, I was targeting $105,000 to $110,000 base. Is there room to move the base to $106,000? I want to find a package that works for both sides, so I am also open to discussing the mix if base flexibility is limited."},
+      {"role": "assistant", "content": "The base budget is fixed. Is there anything else you would consider?"},
+      {"role": "user", "content": "Thanks for being clear. If $92,000 is the firm base, I would like to explore a $12,000 signing bonus, an additional week of leave, and a written compensation review after six months tied to agreed goals. My priority is closing part of the first-year gap while creating a defined path to the level we discussed. Which of those components has the most flexibility?"}
+    ],
+    "expected_score": {"min": 77, "max": 94}
+  }
+]

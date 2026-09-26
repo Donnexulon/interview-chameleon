@@ -1,0 +1,515 @@
+{
+  "evaluation_version": "v5_context_calibrated",
+  "model": "qwen2.5:7b",
+  "generation_options": {
+    "temperature": 0,
+    "seed": 42,
+    "num_predict": 2300
+  },
+  "runs_per_case": 3,
+  "case_count": 2,
+  "case_results": [
+    {
+      "id": "technical_backend_weak",
+      "comparison_group": "technical_backend",
+      "quality": "weak",
+      "module": "technical",
+      "expected_score": {
+        "min": 4,
+        "max": 35
+      },
+      "scores": [
+        20,
+        35,
+        35
+      ],
+      "mean_score": 30,
+      "score_range": 15,
+      "standard_deviation": 7.07,
+      "range_pass": true,
+      "runs": [
+        {
+          "score": 20,
+          "evaluator_confidence": 90,
+          "elapsed_seconds": 54.04,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            20,
+            20
+          ],
+          "question_diagnostics": [
+            {
+              "score": 20,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 60,
+                "specificity": 50,
+                "structure": 50,
+                "evidence_quality": 30,
+                "impact_orientation": 40,
+                "role_alignment": 50,
+                "communication_clarity": 50,
+                "adaptability": 50
+              },
+              "module_scores": {
+                "problem_solving": 20,
+                "technical_accuracy": 10,
+                "thought_process": 30
+              },
+              "critical_error": true,
+              "critical_error_reason": "The candidate's solution is factually incorrect, as adding indexes to every column does not make queries O(1), and moving a large table into memory without considering data size or performance implications can lead to significant issues.",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 20,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 60,
+                "specificity": 50,
+                "structure": 50,
+                "evidence_quality": 30,
+                "impact_orientation": 40,
+                "role_alignment": 50,
+                "communication_clarity": 50,
+                "adaptability": 50
+              },
+              "module_scores": {
+                "problem_solving": 20,
+                "technical_accuracy": 10,
+                "thought_process": 30
+              },
+              "critical_error": true,
+              "critical_error_reason": "The candidate's solution is factually incorrect, as it does not address the distributed nature of the problem and lacks consideration for consistency models or failure scenarios.",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 20,
+            "technical_accuracy": 10,
+            "thought_process": 30
+          }
+        },
+        {
+          "score": 35,
+          "evaluator_confidence": 75,
+          "elapsed_seconds": 24.08,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            35,
+            35
+          ],
+          "question_diagnostics": [
+            {
+              "score": 35,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 85,
+                "specificity": 40,
+                "structure": 70,
+                "evidence_quality": 30,
+                "impact_orientation": 60,
+                "role_alignment": 75,
+                "communication_clarity": 90,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 40,
+                "technical_accuracy": 30,
+                "thought_process": 60
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": true,
+              "essential_gap_reason": "The answer is too generic and lacks specific evidence or trade-offs.",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 35,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 85,
+                "specificity": 40,
+                "structure": 70,
+                "evidence_quality": 30,
+                "impact_orientation": 60,
+                "role_alignment": 75,
+                "communication_clarity": 90,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 40,
+                "technical_accuracy": 30,
+                "thought_process": 60
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": true,
+              "essential_gap_reason": "The answer is too generic and lacks specific evidence or trade-offs.",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 40,
+            "technical_accuracy": 30,
+            "thought_process": 60
+          }
+        },
+        {
+          "score": 35,
+          "evaluator_confidence": 75,
+          "elapsed_seconds": 23.93,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            35,
+            35
+          ],
+          "question_diagnostics": [
+            {
+              "score": 35,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 85,
+                "specificity": 40,
+                "structure": 70,
+                "evidence_quality": 30,
+                "impact_orientation": 60,
+                "role_alignment": 75,
+                "communication_clarity": 90,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 40,
+                "technical_accuracy": 30,
+                "thought_process": 60
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": true,
+              "essential_gap_reason": "The answer is too generic and lacks specific evidence or trade-offs.",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 35,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 85,
+                "specificity": 40,
+                "structure": 70,
+                "evidence_quality": 30,
+                "impact_orientation": 60,
+                "role_alignment": 75,
+                "communication_clarity": 90,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 40,
+                "technical_accuracy": 30,
+                "thought_process": 60
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": true,
+              "essential_gap_reason": "The answer is too generic and lacks specific evidence or trade-offs.",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 40,
+            "technical_accuracy": 30,
+            "thought_process": 60
+          }
+        }
+      ]
+    },
+    {
+      "id": "technical_backend_strong",
+      "comparison_group": "technical_backend",
+      "quality": "strong",
+      "module": "technical",
+      "expected_score": {
+        "min": 80,
+        "max": 96
+      },
+      "scores": [
+        97,
+        97,
+        97
+      ],
+      "mean_score": 97,
+      "score_range": 0,
+      "standard_deviation": 0.0,
+      "range_pass": false,
+      "runs": [
+        {
+          "score": 97,
+          "evaluator_confidence": 95,
+          "elapsed_seconds": 24.41,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            97,
+            97
+          ],
+          "question_diagnostics": [
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 98,
+                "structure": 97,
+                "evidence_quality": 96,
+                "impact_orientation": 94,
+                "role_alignment": 99,
+                "communication_clarity": 95,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 96
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 98,
+                "structure": 97,
+                "evidence_quality": 96,
+                "impact_orientation": 94,
+                "role_alignment": 99,
+                "communication_clarity": 95,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 96
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 98,
+            "technical_accuracy": 97,
+            "thought_process": 96
+          }
+        },
+        {
+          "score": 97,
+          "evaluator_confidence": 95,
+          "elapsed_seconds": 23.72,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            97,
+            97
+          ],
+          "question_diagnostics": [
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 95,
+                "structure": 98,
+                "evidence_quality": 97,
+                "impact_orientation": 96,
+                "role_alignment": 99,
+                "communication_clarity": 94,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 95
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 95,
+                "structure": 98,
+                "evidence_quality": 97,
+                "impact_orientation": 96,
+                "role_alignment": 99,
+                "communication_clarity": 94,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 95
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 98,
+            "technical_accuracy": 97,
+            "thought_process": 95
+          }
+        },
+        {
+          "score": 97,
+          "evaluator_confidence": 95,
+          "elapsed_seconds": 23.69,
+          "attempts": 1,
+          "repair_used": false,
+          "focused_recovery_used": false,
+          "question_scores": [
+            97,
+            97
+          ],
+          "question_diagnostics": [
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 95,
+                "structure": 98,
+                "evidence_quality": 97,
+                "impact_orientation": 96,
+                "role_alignment": 99,
+                "communication_clarity": 94,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 95
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            },
+            {
+              "score": 97,
+              "answer_type": "complete",
+              "competency_scores": {
+                "answer_relevance": 100,
+                "specificity": 95,
+                "structure": 98,
+                "evidence_quality": 97,
+                "impact_orientation": 96,
+                "role_alignment": 99,
+                "communication_clarity": 94,
+                "adaptability": 100
+              },
+              "module_scores": {
+                "problem_solving": 98,
+                "technical_accuracy": 97,
+                "thought_process": 95
+              },
+              "critical_error": false,
+              "critical_error_reason": "",
+              "essential_gap": false,
+              "essential_gap_reason": "",
+              "professional_red_flag": false,
+              "professional_red_flag_reason": ""
+            }
+          ],
+          "module_scores": {
+            "problem_solving": 98,
+            "technical_accuracy": 97,
+            "thought_process": 95
+          }
+        }
+      ]
+    }
+  ],
+  "ordering_checks": [
+    {
+      "comparison_group": "technical_backend",
+      "weak_score": 30,
+      "strong_score": 97,
+      "gap": 67,
+      "minimum_gap": 20,
+      "pass": true
+    }
+  ],
+  "variance_checks": [
+    {
+      "id": "technical_backend_weak",
+      "scores": [
+        20,
+        35,
+        35
+      ],
+      "score_range": 15,
+      "max_score_range": 6,
+      "pass": false
+    },
+    {
+      "id": "technical_backend_strong",
+      "scores": [
+        97,
+        97,
+        97
+      ],
+      "score_range": 0,
+      "max_score_range": 6,
+      "pass": true
+    }
+  ],
+  "errors": [],
+  "summary": {
+    "range_failures": [
+      "technical_backend_strong"
+    ],
+    "ordering_failures": [],
+    "variance_failures": [
+      "technical_backend_weak"
+    ],
+    "error_count": 0,
+    "passed": false
+  }
+}

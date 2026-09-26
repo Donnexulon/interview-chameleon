@@ -2,6 +2,7 @@ import sqlite3
 import json
 import uuid
 import hashlib
+from contextlib import closing
 from typing import List, Dict
 
 class QuestionBank:
@@ -15,7 +16,7 @@ class QuestionBank:
 
     def _init_db(self):
         """Initialize the SQLite database schema for questions and seed missing defaults."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS questions (
@@ -153,7 +154,7 @@ class QuestionBank:
 
     def get_questions(self, category: str = None) -> List[Dict]:
         """Retrieve questions, optionally filtered by category."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             if category:
@@ -174,7 +175,7 @@ class QuestionBank:
 
     def add_question(self, question: Dict):
         """Add a new user question to the bank."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO questions (id, category, text, difficulty, tags, answer, is_seed)
@@ -191,7 +192,7 @@ class QuestionBank:
 
     def update_question(self, question_id: str, question: Dict):
         """Update an existing question."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE questions
@@ -210,7 +211,7 @@ class QuestionBank:
 
     def delete_question(self, question_id: str):
         """Delete a question."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
             conn.commit()

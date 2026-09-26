@@ -2,7 +2,9 @@
  * body_language.js — MediaPipe-based body language analysis for Interview Chameleon.
  *
  * Uses Face Landmarker + Pose Landmarker from @mediapipe/tasks-vision
- * to track eye contact, expressions, posture, gestures, and head movement.
+ * to track only observable camera signals: visibility, approximate gaze,
+ * framing/posture stability, gestures, and head movement. It deliberately does
+ * not infer emotion, personality, confidence, or hiring readiness.
  * Runs entirely in the browser — no video data is sent to the server.
  */
 
@@ -17,8 +19,8 @@ const BodyLanguageAnalyzer = (() => {
 
     // ── Raw data collectors ────────────────────────────────
     const data = {
+        visibility: [],       // per-frame: face visible/not visible
         eyeContact: [],       // per-frame: true/false
-        expressions: [],      // per-frame: 'neutral'|'positive'|'tense'|'negative'
         posture: [],          // per-frame: { shoulderAngle, spineTilt }
         gestures: [],         // per-frame: { handDelta }
         headMovement: [],     // per-frame: { pitch, yaw, roll }
@@ -52,7 +54,7 @@ const BodyLanguageAnalyzer = (() => {
                 },
                 runningMode: 'VIDEO',
                 numFaces: 1,
-                outputFaceBlendshapes: true,
+                outputFaceBlendshapes: false,
                 outputFacialTransformationMatrixes: true,
             });
 
@@ -105,7 +107,7 @@ const BodyLanguageAnalyzer = (() => {
     // ── Reset Data ────────────────────────────────────────
     function resetData() {
         data.eyeContact.length = 0;
-        data.expressions.length = 0;
+        data.visibility.length = 0;
         data.posture.length = 0;
         data.gestures.length = 0;
         data.headMovement.length = 0;
@@ -125,16 +127,13 @@ const BodyLanguageAnalyzer = (() => {
                 const faceResult = faceLandmarker.detectForVideo(videoElement, now);
                 if (faceResult && faceResult.faceLandmarks && faceResult.faceLandmarks.length > 0) {
                     const landmarks = faceResult.faceLandmarks[0];
-                    const blendshapes = faceResult.faceBlendshapes?.[0]?.categories || [];
-
+                    data.visibility.push(true);
                     data.eyeContact.push(analyzeEyeContact(landmarks));
-                    data.expressions.push(analyzeExpression(blendshapes));
                     data.headMovement.push(analyzeHeadMovement(landmarks));
                     prevLandmarks = landmarks;
                 } else {
-                    // No face detected — count as looking away
+                    data.visibility.push(false);
                     data.eyeContact.push(false);
-                    data.expressions.push('neutral');
                     data.headMovement.push({ pitch: 0, yaw: 0, roll: 0 });
                 }
             }
@@ -189,25 +188,6 @@ const BodyLanguageAnalyzer = (() => {
         } catch {
             return false;
         }
-    }
-
-    // ── Expression Analysis ───────────────────────────────
-    function analyzeExpression(blendshapes) {
-        // Map blendshape names to categories
-        const scores = {};
-        for (const bs of blendshapes) {
-            scores[bs.categoryName] = bs.score;
-        }
-
-        const smile = (scores['mouthSmileLeft'] || 0) + (scores['mouthSmileRight'] || 0);
-        const browDown = (scores['browDownLeft'] || 0) + (scores['browDownRight'] || 0);
-        const jawClench = scores['jawForward'] || 0;
-        const eyeSquint = (scores['eyeSquintLeft'] || 0) + (scores['eyeSquintRight'] || 0);
-
-        if (smile > 0.4) return 'positive';
-        if (browDown > 0.5 || jawClench > 0.3) return 'tense';
-        if (eyeSquint > 0.6 && smile < 0.1) return 'negative';
-        return 'neutral';
     }
 
     // ── Head Movement Analysis ────────────────────────────
@@ -297,11 +277,11 @@ const BodyLanguageAnalyzer = (() => {
         const start = Math.max(0, n - window);
 
         const recentEye = data.eyeContact.slice(start);
-        const recentExpr = data.expressions.slice(start);
         const recentPosture = data.posture.slice(start);
         const recentGestures = data.gestures.slice(start);
 
         const eyeScore = Math.round((recentEye.filter(Boolean).length / recentEye.length) * 100);
+        const visibilityScore = Math.round((data.visibility.slice(start).filter(Boolean).length / recentEye.length) * 100);
 
         // Posture: stability of shoulder angle
         const shoulderAngles = recentPosture.map(p => p.shoulderAngle);
@@ -317,6 +297,7 @@ const BodyLanguageAnalyzer = (() => {
 
         return {
             eye_contact: clamp(eyeScore),
+            visibility: clamp(visibilityScore),
             posture: clamp(postureScore),
             gestures: clamp(gestureScore),
         };
@@ -326,7 +307,11 @@ const BodyLanguageAnalyzer = (() => {
     function getPresenceReport() {
         const n = data.eyeContact.length;
         if (n < 20) {
-            return { composite: 0, eye_contact: 0, expression: 0, posture: 0, gestures: 0, head_movement: 0 };
+            return {
+                composite: 0, visibility: 0, eye_contact: 0, posture: 0,
+                posture_stability: 0, gestures: 0, head_movement: 0,
+                experimental: true, confidence: 'insufficient_samples'
+            };
         }
 
         // ─ Eye Contact Score (30% weight)
@@ -343,14 +328,7 @@ const BodyLanguageAnalyzer = (() => {
         }
         const eyeScore = clamp(eyeBase - streakCount * 5);
 
-        // ─ Expression Score (20% weight)
-        const exprCounts = { neutral: 0, positive: 0, tense: 0, negative: 0 };
-        for (const e of data.expressions) exprCounts[e] = (exprCounts[e] || 0) + 1;
-        const distinctExprs = Object.values(exprCounts).filter(c => c > 0).length;
-        const varietyScore = (distinctExprs / 4) * 40;
-        const positiveRatio = (exprCounts.positive / n) * 40;
-        const tensePenalty = (exprCounts.tense / n) * -20;
-        const expressionScore = clamp(Math.round(varietyScore + positiveRatio + tensePenalty + 20));
+        const visibilityScore = clamp(Math.round((data.visibility.filter(Boolean).length / n) * 100));
 
         // ─ Posture Score (25% weight)
         const shoulderAngles = data.posture.map(p => p.shoulderAngle);
@@ -393,8 +371,8 @@ const BodyLanguageAnalyzer = (() => {
 
         // ─ Composite
         const composite = clamp(Math.round(
-            eyeScore * 0.30 +
-            expressionScore * 0.20 +
+            visibilityScore * 0.25 +
+            eyeScore * 0.25 +
             postureScore * 0.25 +
             gestureScore * 0.15 +
             headScore * 0.10
@@ -402,12 +380,16 @@ const BodyLanguageAnalyzer = (() => {
 
         return {
             composite,
+            visibility: visibilityScore,
             eye_contact: eyeScore,
-            expression: expressionScore,
             posture: postureScore,
+            posture_stability: clamp(Math.round(alignment)),
             gestures: gestureScore,
             head_movement: headScore,
             frames_analyzed: n,
+            experimental: true,
+            confidence: n >= 450 ? 'high_sample_count' : n >= 150 ? 'medium_sample_count' : 'low_sample_count',
+            disclaimer: 'Observable camera signals only; does not infer emotion, personality, or readiness.',
         };
     }
 

@@ -89,7 +89,7 @@ if (Test-Command "py") {
 if (Test-Path $VenvPython) {
     $VenvVersion = (& $VenvPython --version 2>&1 | Out-String).Trim()
     Pass "Virtual environment available: $VenvVersion"
-    & $VenvPython -c "import fastapi, uvicorn, pydantic, requests, docx, PyPDF2; print('dependency imports ok')" | Out-Null
+    & $VenvPython -c "import fastapi, uvicorn, pydantic, requests, docx, pypdf, faster_whisper; print('dependency imports ok')" | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Pass "Required Python packages import successfully."
     } else {
@@ -99,12 +99,7 @@ if (Test-Path $VenvPython) {
     Fail "venv\Scripts\python.exe was not found. Run install.bat."
 }
 
-if (Test-Command "ffmpeg") {
-    $FfmpegLine = (& ffmpeg -version 2>$null | Select-Object -First 1)
-    Pass "FFmpeg available: $FfmpegLine"
-} else {
-    Fail "FFmpeg was not found on PATH. Install FFmpeg for speech-to-text support."
-}
+Pass "Speech decoding is provided by faster-whisper/PyAV; system FFmpeg is not required."
 
 try {
     $OllamaTags = Invoke-RestMethod -UseBasicParsing "http://localhost:11434/api/tags" -TimeoutSec 5
